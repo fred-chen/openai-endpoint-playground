@@ -2,6 +2,8 @@
 
 一个**零依赖单文件 HTML** 的 OpenAI 兼容端点对话游乐场：填任意 `…/v1` 端点即可拉取模型、流式对话、显示思考过程并统计吐字速度。
 
+🔗 **在线使用**：https://fred-chen.github.io/openai-endpoint-playground/
+
 ## 特性
 
 - 🔌 输入 OpenAI 兼容端点（如 `https://api.openai.com/v1`、vLLM、Ollama、DeepSeek、Kimi 等），自动拉取 `/models` 模型列表
@@ -16,15 +18,19 @@
 
 ## 使用
 
-直接用浏览器打开 `openai-chat.html`（无需服务器）：
+在线直接用上方链接，或本地用浏览器打开 `index.html`（无需服务器）：
 
 ```
-open openai-chat.html        # macOS
+open index.html              # macOS
 ```
 
 填入端点地址 → 刷新模型 → 输入提示词 → 发送。
 
 > 注意：页面从浏览器直接请求你的端点，需要端点允许浏览器跨域（CORS）；如端点不支持 CORS，请自行加反向代理。
+
+## 自动部署
+
+本仓库通过 GitHub Pages（Deploy from a branch：`main` / `/`）托管。任何推送到 `main` 的提交都会自动触发 Pages 重新构建，线上页面保持最新。
 
 ## License
 
