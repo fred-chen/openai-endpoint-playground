@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OpenAI 兼容端点 · LLM 对话测试</title>
+<!-- 在线库：markdown 渲染 + XSS 过滤（仅用于美化回复；加载失败会自动降级为纯文本） -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --border:#2a2f3d;
+    --text:#e6e8ef; --muted:#9aa3b5; --accent:#4f8cff; --accent2:#6d5cff;
+    --ok:#2ecc71; --err:#ff5c5c;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif}
+  .app{height:100vh;display:flex;flex-direction:column;gap:8px;padding:10px 14px 12px;max-width:1100px;margin:0 auto}
+
+  header{display:flex;align-items:center;gap:9px;flex:none}
+  .logo{width:24px;height:24px;border-radius:7px;flex:0 0 auto;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    display:grid;place-items:center;font-weight:800;color:#fff;font-size:12px}
+  header h1{font-size:15px;margin:0;font-weight:700}
+  header .sub{color:var(--muted);font-size:11.5px;margin-left:auto}
+
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 10px}
+
+  input[type=text],input[type=password],input[type=number],select,textarea{
+    width:100%;color:var(--text);background:var(--panel2);border:1px solid var(--border);
+    border-radius:7px;padding:6px 9px;font-size:13px;outline:none;transition:border .15s;
+  }
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  /* 自定义模型下拉（combobox）：默认展示全部模型，仅用户键盘输入时才过滤 */
+  .combo{position:relative;flex:1;min-width:0}
+  .combo>input{width:100%;padding-right:24px}
+  .combo-caret{position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:9px;color:var(--muted);pointer-events:none}
+  .combo-list{position:absolute;top:calc(100% + 4px);left:0;min-width:100%;max-height:260px;overflow:auto;z-index:150;display:none;
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+  .combo-list.open{display:block}
+  .combo-list .opt{padding:5px 10px;font-size:12.5px;cursor:pointer;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .combo-list .opt:hover,.combo-list .opt.active{background:rgba(79,140,255,.18)}
+  .combo-list .empty{padding:5px 10px;font-size:12px;color:var(--muted)}
+  select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b5' stroke-width='2.4'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;padding-right:30px}
+  textarea{resize:vertical;font-family:var(--mono);font-size:12.5px;line-height:1.5;min-height:64px;max-height:45vh}
+  input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
+
+  /* 行内字段：label 与控件同一行，省纵向空间 */
+  .frow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .frow + .frow{margin-top:6px}
+  .ifield{display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 200px}
+  .ifield>label{font-size:11px;color:var(--muted);white-space:nowrap;flex:none}
+  .ifield>input,.ifield>select{flex:1;min-width:0;width:auto}
+  .ifield.num{flex:0 0 auto}
+  .ifield.num>input{width:76px}
+  .ifield.sel>select{width:118px;flex:none}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;cursor:pointer;
+    padding:7px 13px;border-radius:7px;font-size:13px;font-weight:600;color:#fff;white-space:nowrap;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));transition:filter .15s,transform .05s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
+  .btn.ghost{background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+  .btn.danger{background:transparent;border:1px solid var(--err);color:var(--err)}
+  .btn.sm{padding:4px 9px;font-size:12px}
+
+  .chk{display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap}
+  .chk input{accent-color:var(--accent);width:14px;height:14px;margin:0;cursor:pointer}
+
+  /* 对话卡：提示词 + 工具条 + 输出 紧密结合 */
+  .chat{flex:1;min-height:240px;position:relative;display:flex;flex-direction:column;overflow:hidden}
+  .chat.maximized{position:fixed;inset:2vh 2vw;z-index:99;flex:none;box-shadow:0 24px 80px rgba(0,0,0,.7)}
+  .backdrop{position:fixed;inset:0;z-index:98;display:none;background:rgba(0,0,0,.55)}
+  body.maximized .backdrop{display:block}
+
+  .prompts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  @media(max-width:720px){.prompts{grid-template-columns:1fr}}
+
+  .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 6px}
+  .toolbar .spacer{flex:1}
+  .stat{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .stat .pill{background:var(--panel2);border:1px solid var(--border);border-radius:7px;
+    padding:3px 8px;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .stat .pill b{color:var(--text);font-weight:700;font-family:var(--mono)}
+  .stat .pill.hl b{color:var(--accent)}
+
+  .statusbar{display:flex;align-items:center;gap:9px;min-height:18px;margin:0 0 6px;font-size:12.5px;color:var(--muted);flex:none}
+  .spinner{width:13px;height:13px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--accent);animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .statusbar.error{color:var(--err)}
+  .statusbar.ok{color:var(--ok)}
+  .statusbar .msg{word-break:break-all}
+  .statusbar .meta{margin-left:auto;white-space:nowrap}
+
+  .output{flex:1;min-height:120px;overflow:auto;background:#0b0d12;border:1px solid var(--border);
+    border-radius:9px;padding:12px 13px}
+  .section{margin-bottom:14px}
+  .section:last-child{margin-bottom:0}
+  .section-head{display:flex;align-items:center;gap:8px;margin-bottom:7px;cursor:pointer;user-select:none}
+  .section-head .tag{font-size:11.5px;font-weight:700;letter-spacing:.4px;padding:2px 8px;border-radius:6px}
+  .tag.reason{background:rgba(109,92,255,.16);color:#b5a6ff;border:1px solid rgba(109,92,255,.35)}
+  .tag.content{background:rgba(79,140,255,.16);color:#9cc0ff;border:1px solid rgba(79,140,255,.35)}
+  .section-head .count{font-size:11.5px;color:var(--muted)}
+  .section-head .chev{color:var(--muted);font-size:10px;transition:transform .15s}
+  .section.collapsed .chev{transform:rotate(-90deg)}
+  .section-body{white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12.5px;color:#d5dbe8}
+  .section.collapsed .section-body{display:none}
+  #contentBody{font-family:inherit;font-size:14px;color:var(--text);white-space:normal}
+  #contentBody pre{background:#10131b;border:1px solid var(--border);border-radius:8px;padding:11px;overflow:auto;font-family:var(--mono);font-size:12.5px}
+  #contentBody code{font-family:var(--mono);font-size:12.5px;background:#10131b;border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  #contentBody pre code{border:none;background:none;padding:0}
+  #contentBody blockquote{border-left:3px solid var(--accent);margin:8px 0;padding:2px 12px;color:var(--muted)}
+  #contentBody img{max-width:100%}
+  /* 思考过程：黑客帝国式暗绿 + 微辉光 */
+  #reasonBody{color:#0f8f3e;text-shadow:0 0 5px rgba(0,150,60,.3);font-family:var(--mono)}
+
+  .to-bottom{position:absolute;bottom:12px;right:14px;z-index:5;display:none;
+    border:none;cursor:pointer;padding:5px 10px;border-radius:8px;font-size:12px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+    box-shadow:0 4px 14px rgba(0,0,0,.45);transition:filter .15s}
+  .to-bottom:hover{filter:brightness(1.08)}
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);
+    background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 16px;
+    font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.4);opacity:0;pointer-events:none;
+    transition:opacity .2s,transform .2s;z-index:200;max-width:90vw}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.err{border-color:var(--err);color:#ffb3b3}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">AI</div>
+    <h1>OpenAI 兼容端点 · LLM 对话测试</h1>
+    <span class="sub">流式思考 / 回复 · 速度统计</span>
+  </header>
+
+  <!-- 端点与模型：两行紧凑配置 -->
+  <div class="card">
+    <div class="frow">
+      <div class="ifield" style="flex:2.2 1 260px">
+        <label for="endpoint">端点</label>
+        <input id="endpoint" type="text" value="http://ai395:8080/v1" autocomplete="off" />
+      </div>
+      <div class="ifield" style="flex:1.4 1 180px">
+        <label for="apiKey">Key</label>
+        <input id="apiKey" type="password" placeholder="可选" autocomplete="off" />
+      </div>
+      <button class="btn" id="loadBtn">↻ 刷新模型</button>
+    </div>
+    <div class="frow">
+      <div class="ifield" style="flex:1.8 1 220px">
+        <label for="model">模型</label>
+        <div class="combo" id="modelCombo">
+          <input id="model" type="text" placeholder="下拉选择或直接输入模型名" autocomplete="off" />
+          <span class="combo-caret">▼</span>
+          <div class="combo-list" id="modelListPop"></div>
+        </div>
+      </div>
+      <div class="ifield num"><label for="temperature">temp</label><input id="temperature" type="number" value="0.7" step="0.1" min="0" max="2" /></div>
+      <div class="ifield num"><label for="topP">top_p</label><input id="topP" type="number" value="1" step="0.05" min="0" max="1" /></div>
+      <div class="ifield num"><label for="topK">top_k</label><input id="topK" type="number" placeholder="—" step="1" min="0" /></div>
+      <div class="ifield sel"><label for="reasoningEffort">effort</label>
+        <select id="reasoningEffort">
+          <option value="off" selected>off</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 对话卡：提示词 + 工具条 + 输出 -->
+  <div class="card chat" id="chatCard">
+    <div class="prompts">
+      <textarea id="system" placeholder="系统提示词 System Prompt（可选）"></textarea>
+      <textarea id="prompt" placeholder="用户提示词 User Prompt…（Ctrl/⌘+Enter 发送）"></textarea>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn" id="sendBtn">🚀 发送</button>
+      <button class="btn danger" id="stopBtn" disabled>⏹ 停止</button>
+      <button class="btn ghost" id="clearBtn" title="清空对话上下文与输出">清空</button>
+      <label class="chk" title="勾选：保留上下文进行多轮对话；取消勾选：每次发送都清空上下文，从新对话开始">
+        <input type="checkbox" id="multiTurn" checked /> 多轮对话
+      </label>
+      <span class="spacer"></span>
+      <div class="stat" id="statBar">
+        <div class="pill">TTFT <b id="ttft">—</b></div>
+        <div class="pill">耗时 <b id="genTime">—</b></div>
+        <div class="pill">字数 <b id="chars">—</b></div>
+        <div class="pill hl">吐字 <b id="cps">—</b></div>
+        <div class="pill">Tokens <b id="tokens">—</b></div>
+        <div class="pill">tok/s <b id="tps">—</b></div>
+      </div>
+      <button class="btn ghost sm" id="maxBtn" title="最大化 / 还原（Esc）">⤢ 最大化</button>
+    </div>
+
+    <div class="statusbar" id="statusbar" style="display:none">
+      <span class="spinner" id="spinner"></span>
+      <span class="msg" id="statusMsg"></span>
+      <span class="meta" id="statusMeta"></span>
+    </div>
+
+    <div class="output" id="output">
+      <div class="section collapsed" id="reasonSection">
+        <div class="section-head" id="reasonHead">
+          <span class="chev">▼</span>
+          <span class="tag reason">思考过程</span>
+          <span class="count" id="reasonCount"></span>
+        </div>
+        <div class="section-body" id="reasonBody"></div>
+      </div>
+      <div class="section" id="contentSection">
+        <div class="section-head" id="contentHead">
+          <span class="chev">▼</span>
+          <span class="tag content">回复内容</span>
+          <span class="count" id="contentCount"></span>
+        </div>
+        <div class="section-body" id="contentBody" style="white-space:normal"></div>
+      </div>
+    </div>
+
+    <button class="to-bottom" id="toBottom" title="回到底部">⬇ 回到底部</button>
+  </div>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const endpoint = $('endpoint'), apiKey = $('apiKey'), model = $('model');
+  const modelPop = $('modelListPop');
+  const systemEl = $('system'), promptEl = $('prompt');
+  const temperature = $('temperature'), topP = $('topP'), topK = $('topK'), reasoningEffort = $('reasoningEffort');
+  const multiTurn = $('multiTurn');
+  const loadBtn = $('loadBtn'), sendBtn = $('sendBtn'), stopBtn = $('stopBtn'), clearBtn = $('clearBtn');
+  const statusbar = $('statusbar'), spinner = $('spinner'), statusMsg = $('statusMsg'), statusMeta = $('statusMeta');
+  const output = $('output'), reasonBody = $('reasonBody'), contentBody = $('contentBody');
+  const reasonCount = $('reasonCount'), contentCount = $('contentCount');
+  const ttft = $('ttft'), genTime = $('genTime'), chars = $('chars'), cps = $('cps'), tokens = $('tokens'), tps = $('tps');
+  const chatCard = $('chatCard');
+  const toBottom = $('toBottom');
+
+  // ---------- 模型 combobox：焦点/点击时默认展示全部，仅键盘输入才过滤 ----------
+  let modelNames = [];
+  let comboTyped = false;   // 用户是否已手动输入（决定下拉是否过滤）
+  let comboActive = -1;
+  function comboFiltered(){
+    const q = comboTyped ? model.value.trim().toLowerCase() : '';
+    return q ? modelNames.filter(n => n.toLowerCase().includes(q)) : modelNames.slice();
+  }
+  function renderCombo(){
+    const items = comboFiltered();
+    modelPop.innerHTML = '';
+    comboActive = -1;
+    if(!items.length){
+      const d = document.createElement('div');
+      d.className = 'empty';
+      d.textContent = modelNames.length ? '无匹配项 · 将直接按输入内容发送' : '尚未加载模型 · 可手动输入模型名';
+      modelPop.appendChild(d);
+      return;
+    }
+    items.forEach(n => {
+      const d = document.createElement('div');
+      d.className = 'opt' + (n === model.value ? ' active' : '');
+      d.textContent = n;
+      d.dataset.v = n;
+      // mousedown + preventDefault：避免点击选项前输入框先 blur 导致列表被提前关闭
+      d.addEventListener('mousedown', e => {
+        e.preventDefault();
+        model.value = n; comboTyped = false; closeCombo();
+      });
+      modelPop.appendChild(d);
+    });
+  }
+  function openCombo(){ modelPop.classList.add('open'); renderCombo(); }
+  function closeCombo(){ modelPop.classList.remove('open'); }
+  function comboMove(dir){
+    const els = comboOptions();
+    if(!els.length) return;
+    comboActive = Math.max(0, Math.min(els.length - 1, comboActive + dir));
+    els.forEach((el, i) => el.classList.toggle('active', i === comboActive));
+    els[comboActive].scrollIntoView({ block:'nearest' });
+  }
+  function comboOptions(){ return [...modelPop.querySelectorAll('.opt')]; }
+  const maxBtn = $('maxBtn'), backdrop = $('backdrop');
+
+  let abortCtrl = null;
+  let reasoning = '', content = '';
+  let sentAt = 0, firstTokenAt = 0, lastTokenAt = 0;
+  let usage = null;
+  let conversation = []; // 多轮上下文（不含 system）
+
+  // ---------- 工具 ----------
+  function normalizeBase(u){ return (u || '').trim().replace(/\/+$/,''); }
+  function headers(extra){
+    const h = Object.assign({ 'Accept':'application/json' }, extra || {});
+    const k = apiKey.value.trim();
+    if(k) h['Authorization'] = 'Bearer ' + k;
+    return h;
+  }
+  let toastTimer = null;
+  function toast(msg, isErr){
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (isErr ? ' err' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=>{ t.className='toast'; }, 3200);
+  }
+  function setStatus(msg, state){
+    if(!msg){ statusbar.style.display='none'; return; }
+    statusbar.style.display = 'flex';
+    statusbar.className = 'statusbar' + (state==='error'?' error':state==='ok'?' ok':'');
+    spinner.style.display = state==='loading' ? 'inline-block' : 'none';
+    statusMsg.textContent = msg;
+    statusMeta.textContent = '';
+  }
+  function renderMarkdown(text){
+    if(!text) return '';
+    try{
+      if(window.marked && window.DOMPurify){
+        return window.DOMPurify.sanitize(window.marked.parse(text));
+      }
+    }catch(e){}
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/\n/g,'<br>');
+  }
+
+  // ---------- 滚动跟随 ----------
+  let stickToBottom = true;
+  function nearBottom(){
+    return output.scrollHeight - output.scrollTop - output.clientHeight < 60;
+  }
+  function autoScroll(){
+    if(!stickToBottom) return;
+    output.scrollTop = output.scrollHeight;
+  }
+  // 强制跳到底部：连续钉住几帧，压过惯性滚动与刚发生布局变化的时刻（如最大化弹窗时）
+  let pinTimer = null;
+  function jumpToBottom(){
+    stickToBottom = true;
+    toBottom.style.display = 'none';
+    clearTimeout(pinTimer);
+    let n = 0;
+    const pin = () => {
+      output.scrollTop = output.scrollHeight;
+      if(++n < 8) pinTimer = setTimeout(pin, 60);
+    };
+    pin();
+  }
+  output.addEventListener('scroll', () => {
+    stickToBottom = nearBottom();
+    toBottom.style.display = nearBottom() ? 'none' : 'block';
+  });
+
+  // ---------- 渲染 ----------
+  function updateReasonUI(){
+    reasonBody.innerText = reasoning;
+    reasonCount.textContent = reasoning ? reasoning.length + ' 字' : '';
+    autoScroll();
+  }
+  // 回复内容按帧合批渲染：无论一帧内推来多少 SSE 分片，都最多重渲染一次，
+  // 且 rAF 一定会在下一帧触发（不会被后续分片取消），因此能看到逐字/逐帧的流式效果
+  let contentRenderScheduled = false;
+  function scheduleContentRender(){
+    if(contentRenderScheduled) return;
+    contentRenderScheduled = true;
+    requestAnimationFrame(() => {
+      contentRenderScheduled = false;
+      contentBody.innerHTML = renderMarkdown(content);
+      autoScroll();
+    });
+  }
+  function updateContentUI(){
+    contentCount.textContent = content ? content.length + ' 字' : '';
+    scheduleContentRender();
+    autoScroll();
+  }
+  function flushContentUI(){
+    contentRenderScheduled = false;
+    contentBody.innerHTML = renderMarkdown(content);
+    autoScroll();
+  }
+  function resetOutput(){
+    reasoning=''; content=''; usage=null;
+    sentAt=0; firstTokenAt=0; lastTokenAt=0;
+    stickToBottom = true;
+    updateReasonUI(); updateContentUI();
+    $('reasonSection').classList.add('collapsed');
+    $('contentSection').classList.remove('collapsed');
+    ttft.textContent='—'; genTime.textContent='—'; chars.textContent='—';
+    cps.textContent='—'; tokens.textContent='—'; tps.textContent='—';
+    output.scrollTop = 0;
+    toBottom.style.display = 'none';
+  }
+  function scrollToReply(){
+    chatCard.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
+
+  // ---------- 模型列表（datalist：可选择，也可自由键入未列举的模型名） ----------
+  async function loadModels(){
+    const base = normalizeBase(endpoint.value);
+    if(!base){ toast('请先填写端点地址', true); return; }
+    loadBtn.disabled = true; setStatus('正在获取模型列表…', 'loading');
+    try{
+      const res = await fetch(base + '/models', { headers: headers() });
+      if(res.status === 401 || res.status === 403) throw new Error('HTTP ' + res.status + '：未授权，请检查 API Key');
+      if(!res.ok){
+        let detail='';
+        try{ const j = await res.json(); detail = (j.error && (j.error.message||j.error)) || ''; }catch(e){}
+        throw new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
+      }
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data.data || []);
+      const ids = (list.map(m => typeof m==='string' ? m : (m.id||m.name)).filter(Boolean));
+      const uniq = [...new Set(ids)].sort((a,b)=>a.localeCompare(b));
+      if(!uniq.length) throw new Error('端点未返回任何模型');
+      modelNames = uniq;
+      modelPop.innerHTML = ''; // 下次打开时重新渲染
+      if(!model.value.trim()){ model.value = uniq[0]; comboTyped = false; }
+      setStatus('已加载 ' + uniq.length + ' 个模型（也可手动输入其他名称）', 'ok');
+      toast('模型列表已更新，共 ' + uniq.length + ' 个');
+    }catch(e){
+      setStatus('获取模型失败：' + e.message, 'error');
+      toast('获取模型失败：' + e.message, true);
+    }finally{
+      loadBtn.disabled = false;
+    }
+  }
+
+  // ---------- SSE ----------
+  function handleFrame(frame){
+    frame = frame.replace(/\r\n/g, '\n');
+    for(const line of frame.split('\n')){
+      if(!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if(!payload) continue;
+      if(payload === '[DONE]') return false;
+      let j;
+      try{ j = JSON.parse(payload); }catch(e){ continue; }
+      const choice = j.choices && j.choices[0];
+      if(choice && choice.delta){
+        const d = choice.delta;
+        let reas = d.reasoning_content ?? d.reasoning;
+        if(!reas && d.message) reas = d.message.reasoning_content ?? d.message.reasoning;
+        if(reas){
+          if(!reasoning){
+            $('reasonSection').classList.remove('collapsed');
+            if(!firstTokenAt) firstTokenAt = performance.now();
+          }
+          reasoning += reas; updateReasonUI();
+        }
+        let c = d.content;
+        if(c === undefined && d.message) c = d.message.content;
+        if(c){
+          if(!firstTokenAt) firstTokenAt = performance.now();
+          content += c; updateContentUI();
+        }
+      }
+      if(j.usage) usage = j.usage;
+    }
+    return true;
+  }
+
+  async function streamResponse(base, body){
+    const res = await fetch(base + '/chat/completions', {
+      method:'POST', headers: headers({'Content-Type':'application/json'}), body: JSON.stringify(body), signal: abortCtrl.signal
+    });
+    if(res.status === 401 || res.status === 403) throw new Error('HTTP ' + res.status + '：未授权，请检查 API Key');
+    if(!res.ok){
+      let detail='';
+      try{ const j = await res.json(); detail = (j.error && (j.error.message||j.error)) || ''; }catch(e){}
+      throw new Error(detail || ('HTTP ' + res.status));
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if(!res.body || contentType.indexOf('text/event-stream') === -1){
+      const j = await res.json();
+      const msg = j.choices && j.choices[0] && (j.choices[0].message || j.choices[0].delta);
+      if(msg){
+        if(msg.reasoning_content || msg.reasoning){
+          reasoning += (msg.reasoning_content || msg.reasoning || ''); updateReasonUI();
+          $('reasonSection').classList.remove('collapsed');
+        }
+        if(msg.content){ content += msg.content; updateContentUI(); }
+      }
+      if(j.usage) usage = j.usage;
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buffer += decoder.decode(value, {stream:true});
+      let idx;
+      while((idx = buffer.indexOf('\n\n')) !== -1){
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if(!handleFrame(frame)) return;
+      }
+    }
+    if(buffer.trim()) handleFrame(buffer);
+  }
+
+  // ---------- 采样参数 ----------
+  function readSamplingParams(body){
+    const t = parseFloat(temperature.value);
+    const p = parseFloat(topP.value);
+    const k = topK.value.trim();
+    const re = reasoningEffort.value;
+    if(!isNaN(t)) body.temperature = t;
+    if(!isNaN(p)) body.top_p = p;
+    if(k !== '' && !isNaN(parseFloat(k))) body.top_k = parseFloat(k);
+    if(re && re !== 'off') body.reasoning_effort = re;
+    return body;
+  }
+
+  async function send(){
+    const base = normalizeBase(endpoint.value);
+    if(!base){ toast('请先填写端点地址', true); return; }
+    if(!model.value.trim()){ toast('请选择或输入模型名', true); return; }
+    const userText = promptEl.value;
+    if(!userText.trim()){ toast('请填写用户提示词', true); return; }
+    const sysText = systemEl.value;
+
+    abortCtrl = new AbortController();
+    sendBtn.disabled = true; stopBtn.disabled = false;
+    resetOutput();
+    scrollToReply();
+    setStatus('连接中…', 'loading');
+
+    // 多轮对话未勾选：每次发送都清空上下文，从新对话开始
+    if(!multiTurn.checked) conversation = [];
+
+    const messages = [];
+    if(sysText.trim()) messages.push({ role:'system', content: sysText });
+    for(const m of conversation) messages.push(m);
+    messages.push({ role:'user', content: userText });
+
+    const body = readSamplingParams({ model: model.value.trim(), messages, stream: true });
+    sentAt = performance.now();
+
+    try{
+      await streamResponse(base, body);
+      lastTokenAt = performance.now();
+      setStatus('完成 ✓', 'ok');
+    }catch(e){
+      if(abortCtrl && abortCtrl.signal.aborted){
+        setStatus('已停止', 'ok');
+        toast('已停止本次生成');
+      }else{
+        setStatus('请求出错：' + e.message, 'error');
+        toast('请求出错：' + e.message, true);
+      }
+      lastTokenAt = performance.now();
+    }finally{
+      sendBtn.disabled = false;
+      stopBtn.disabled = true;
+      flushContentUI(); // 确保最后的回复完整渲染
+      autoScroll();
+      if(content){
+        conversation.push({ role:'user', content: userText });
+        conversation.push({ role:'assistant', content });
+      }
+      computeStats();
+    }
+  }
+
+  function computeStats(){
+    if(!content && !reasoning) return;
+    const genSpan = (lastTokenAt && firstTokenAt) ? (lastTokenAt - firstTokenAt) / 1000 : ((lastTokenAt - sentAt) / 1000);
+    if(firstTokenAt && sentAt){ ttft.textContent = ((firstTokenAt - sentAt)/1000).toFixed(2) + ' s'; }
+    else if(lastTokenAt && sentAt){ ttft.textContent = ((lastTokenAt - sentAt)/1000).toFixed(2) + ' s'; }
+    genTime.textContent = genSpan.toFixed(2) + ' s';
+    chars.textContent = content.length + ' 字';
+    cps.textContent = genSpan > 0 ? (content.length / genSpan).toFixed(1) + ' 字/s' : '—';
+    let tok = null;
+    if(usage && usage.completion_tokens != null) tok = usage.completion_tokens;
+    else if(usage && usage.total_tokens != null && usage.prompt_tokens != null) tok = usage.total_tokens - usage.prompt_tokens;
+    if(tok == null) tok = Math.max(1, Math.round(content.length / 4));
+    tokens.textContent = tok + ' tok';
+    tps.textContent = genSpan > 0 ? (tok / genSpan).toFixed(1) + ' tok/s' : '—';
+  }
+
+  function stop(){ if(abortCtrl) abortCtrl.abort(); }
+  function clearAll(){
+    if(abortCtrl) abortCtrl.abort();
+    conversation = [];
+    resetOutput();
+    statusbar.style.display='none';
+  }
+
+  // ---------- 最大化 / 还原 ----------
+  let maximized = false;
+  function setMaximized(on){
+    maximized = on;
+    chatCard.classList.toggle('maximized', on);
+    document.body.classList.toggle('maximized', on);
+    maxBtn.textContent = on ? '⤡ 还原' : '⤢ 最大化';
+    if(on){
+      // 弹窗打开时布局剧变：强制钉住到底部几帧，保证最新内容可见且按钮状态正确
+      jumpToBottom();
+    }
+  }
+
+  // ---------- 事件 ----------
+  loadBtn.addEventListener('click', loadModels);
+  endpoint.addEventListener('keydown', e => { if(e.key==='Enter') loadModels(); });
+  sendBtn.addEventListener('click', send);
+  stopBtn.addEventListener('click', stop);
+  clearBtn.addEventListener('click', clearAll);
+  promptEl.addEventListener('keydown', e => {
+    if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){ e.preventDefault(); send(); }
+  });
+  systemEl.addEventListener('keydown', e => {
+    if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){ e.preventDefault(); send(); }
+  });
+  // combobox：聚焦/点击展示全部；只有键盘输入才过滤
+  model.addEventListener('focus', openCombo);
+  model.addEventListener('click', openCombo);
+  model.addEventListener('input', () => { comboTyped = true; renderCombo(); });
+  model.addEventListener('blur', () => setTimeout(closeCombo, 120));
+  model.addEventListener('keydown', e => {
+    if(e.key === 'ArrowDown'){ e.preventDefault(); comboMove(1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); comboMove(-1); }
+    else if(e.key === 'Enter'){
+      if(modelPop.classList.contains('open') && comboActive >= 0){
+        e.preventDefault();
+        const els = comboOptions();
+        if(els[comboActive]){ model.value = els[comboActive].dataset.v; comboTyped = false; }
+        closeCombo();
+      } else if(modelPop.classList.contains('open')){
+        e.preventDefault(); closeCombo(); // 未选中任何项：回车收起列表
+      }
+    }
+    else if(e.key === 'Escape'){ closeCombo(); }
+  });
+  $('reasonHead').addEventListener('click', () => $('reasonSection').classList.toggle('collapsed'));
+  $('contentHead').addEventListener('click', () => $('contentSection').classList.toggle('collapsed'));
+  toBottom.addEventListener('click', jumpToBottom);
+  maxBtn.addEventListener('click', () => setMaximized(!maximized));
+  backdrop.addEventListener('click', () => setMaximized(false));
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && maximized && !modelPop.classList.contains('open')) setMaximized(false);
+  });
+})();
+</script>
+</body>
+</html>
