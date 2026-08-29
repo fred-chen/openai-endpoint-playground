@@ -26,7 +26,22 @@ open index.html              # macOS
 
 填入端点地址 → 刷新模型 → 输入提示词 → 发送。
 
-> 注意：页面从浏览器直接请求你的端点，需要端点允许浏览器跨域（CORS）；如端点不支持 CORS，请自行加反向代理。
+> **https 页面调用 http 端点会被浏览器拦截（混合内容）**：在线地址是 https，若你的端点是 http（如局域网 `http://ai395:8080/v1`），安全页面不能直接访问 http 接口，会报 `Failed to fetch`。这不是 CORS 问题。解决办法见下方「连接 http 端点」。
+
+## 连接 http 端点（混合内容）
+
+在线页是 **https**，浏览器禁止 https 页面请求 **http** 接口（混合内容），表现为 `获取模型失败：Failed to fetch`。三种解法，任选其一：
+
+1. **本地代理（推荐）**：本地运行仓库里的 `dev-proxy.js`，它同时解决混合内容与 CORS，并能访问你内网的 `ai395`：
+   ```
+   node dev-proxy.js                 # 默认上游 http://ai395:8080
+   # 或：node dev-proxy.js http://ai395:8080 8787
+   ```
+   然后打开 **http://localhost:8787/** ，端点填 **http://localhost:8787/v1**。
+2. **本地直接打开**：`open index.html`（或任意 http 本地服务），本地页面访问 http 内网端点不受混合内容限制。
+3. **给端点配 HTTPS**：为 `ai395:8080` 配上 TLS，或放到同源的 https 反向代理后面，在线页即可直连。
+
+> 提示：`dev-proxy.js` 仅监听 `127.0.0.1`、无鉴权，只用于本地调试。
 
 ## 自动部署
 

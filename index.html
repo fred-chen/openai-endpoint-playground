@@ -409,7 +409,28 @@
     chatCard.scrollIntoView({ behavior:'smooth', block:'nearest' });
   }
 
-  // ---------- 模型列表（datalist：可选择，也可自由键入未列举的模型名） ----------
+  // 当 https 页面请求 http 端点时，浏览器会因『混合内容』直接拦截 fetch，
+  // 表现为原始的 TypeError: Failed to fetch。这里把它翻译成可操作的中文提示。
+  function friendlyFetchError(err, base){
+    const msg = (err && err.message) || String(err);
+    const isNetFail = /failed to fetch|networkerror|load failed|network request failed/i.test(msg);
+    if(isNetFail){
+      const pageSecure = (location.protocol === 'https:');
+      let epSecure = true;
+      try{ epSecure = new URL(base).protocol === 'https:'; }catch(e){}
+      if(pageSecure && !epSecure){
+        return '混合内容被浏览器拦截：当前页面是 https，而端点是 http，安全页面不能访问 http 接口。\n'
+             + '解决办法（任选其一）：\n'
+             + '1) 本地运行：在本目录执行 `node dev-proxy.js`，然后打开 http://localhost:8787/ ，端点填 http://localhost:8787/v1；\n'
+             + '2) 给端点配 HTTPS（或放在同源 https 反向代理后面）；\n'
+             + '3) 直接用本地 index.html（file:// 或 http://localhost）访问该内网端点。';
+      }
+      return '无法连接端点（' + base + '）。请检查：地址是否正确、服务是否在线、该地址在你当前网络是否可达、以及是否已允许跨域(CORS)。';
+    }
+    return msg;
+  }
+
+  // ---------- 模型列表（combobox：可选择，也可自由键入未列举的模型名） ----------
   async function loadModels(){
     const base = normalizeBase(endpoint.value);
     if(!base){ toast('请先填写端点地址', true); return; }
@@ -433,8 +454,9 @@
       setStatus('已加载 ' + uniq.length + ' 个模型（也可手动输入其他名称）', 'ok');
       toast('模型列表已更新，共 ' + uniq.length + ' 个');
     }catch(e){
-      setStatus('获取模型失败：' + e.message, 'error');
-      toast('获取模型失败：' + e.message, true);
+      const msg = friendlyFetchError(e, base);
+      setStatus('获取模型失败：' + msg, 'error');
+      toast('获取模型失败：' + msg.split('\n')[0], true);
     }finally{
       loadBtn.disabled = false;
     }
@@ -562,8 +584,9 @@
         setStatus('已停止', 'ok');
         toast('已停止本次生成');
       }else{
-        setStatus('请求出错：' + e.message, 'error');
-        toast('请求出错：' + e.message, true);
+        const msg = friendlyFetchError(e, base);
+        setStatus('请求出错：' + msg, 'error');
+        toast('请求出错：' + msg.split('\n')[0], true);
       }
       lastTokenAt = performance.now();
     }finally{
