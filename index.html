@@ -463,6 +463,17 @@
   }
 
   // ---------- SSE ----------
+  // 端点可能用 \r\n\r\n（CRLF）或 \n\n（LF）分隔事件帧。
+  // 先统一换行再按“空行”切帧，两种分隔都安全；同时避免把跨 TCP 块粘在一起的半帧误切。
+  function splitSSE(buffer){
+    // 统一换行：\r\n 与孤立的 \r 都变 \n，这样无论端点用 CRLF 还是 LF 分隔，
+    // 事件帧之间都恰好是“两个换行”。只剥掉行尾的空白，避免误删真实帧的开头。
+    const b = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const idx = b.indexOf('\n\n');
+    if(idx === -1) return { frame: null, rest: b, done: false };
+    const raw = b.slice(0, idx).replace(/\s+$/g, '');
+    return { frame: raw, rest: b.slice(idx + 2), done: raw.length > 0 };
+  }
   function handleFrame(frame){
     frame = frame.replace(/\r\n/g, '\n');
     for(const line of frame.split('\n')){
@@ -527,14 +538,13 @@
       const {done, value} = await reader.read();
       if(done) break;
       buffer += decoder.decode(value, {stream:true});
-      let idx;
-      while((idx = buffer.indexOf('\n\n')) !== -1){
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        if(!handleFrame(frame)) return;
+      let s;
+      while((s = splitSSE(buffer)).done){
+        buffer = s.rest;
+        if(!handleFrame(s.frame)) return;
       }
     }
-    if(buffer.trim()) handleFrame(buffer);
+    const s = splitSSE(buffer); if(s.frame) handleFrame(s.frame);
   }
 
   // ---------- 采样参数 ----------
