@@ -44,20 +44,20 @@ function cors(req, res) {
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-// 读取仓库里的 index.html 作为本地页面（同源，无任何混合内容/CORS 问题）
+// 读取仓库里的 openai-chat.html 作为本地页面（同源，无任何混合内容/CORS 问题）
 async function serveApp(req, res) {
   try {
-    const html = await readFile(path.join(__dirname, 'index.html'));
+    const html = await readFile(path.join(__dirname, 'openai-chat.html'));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(html);
   } catch (e) {
-    res.writeHead(500); res.end('index.html not found: ' + e.message);
+    res.writeHead(500); res.end('openai-chat.html not found: ' + e.message);
   }
 }
 
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://' + HOST);
-  if (u.pathname === '/' || u.pathname === '/index.html') {
+  if (u.pathname === '/' || u.pathname === '/index.html' || u.pathname === '/openai-chat.html') {
     if (req.method === 'GET') return serveApp(req, res);
   }
   cors(req, res);
