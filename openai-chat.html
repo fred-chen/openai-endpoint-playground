@@ -1128,6 +1128,8 @@
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
+      // PP 无轮内分布可用：预填期间服务端不发送任何数据（首 token 前客户端只能等），
+      // 单轮只能给出一个速率（prompt tokens / 到首 token 的时延）。分布只在多轮间成立。
       mmaCell(r.ppTps, r.ppTps, r.ppTps),
       ss ? mmaCell(ss.min, ss.max, ss.avg) : (r.tgTps != null ? mmaCell(r.tgTps, r.tgTps, r.tgTps) : null),
       // PP 分位数是跨轮统计：单轮行内只有本轮一个样本，P50 = P99 = 本轮值
