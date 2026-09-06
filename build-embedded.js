@@ -73,9 +73,9 @@ async function main(){
   }
   const payload = JSON.stringify(Object.fromEntries(entries));
 
-  const inject = MARK_OPEN + '\n' +
+  const inject = '<script>' + MARK_OPEN + '\n' +
     'window.BENCH_EMBEDDED_TOKENIZERS = ' + payload + ';\n' +
-    MARK_CLOSE;
+    MARK_CLOSE + '</script>';
 
   if(html.includes(MARK_OPEN)){
     const re = new RegExp(MARK_OPEN.replace(/[/&*]/g, m => '\\' + m) + '[\\s\\S]*?' + MARK_CLOSE.replace(/[/&*]/g, m => '\\' + m));
