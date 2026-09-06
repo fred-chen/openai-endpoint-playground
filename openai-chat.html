@@ -313,7 +313,6 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     <table class="btable">
       <thead><tr>
         <th>类型</th><th>轮</th><th>TTFT</th><th>PP MIN/MAX/AVG</th><th>TG MIN/MAX/AVG</th>
-        <th>PP P50/P99</th><th>TG P50/P99</th>
         <th>prompt tok</th><th>生成 tok</th><th>总耗时</th><th>数据来源</th>
       </tr></thead>
       <tbody id="benchRows"></tbody>
@@ -1270,14 +1269,6 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     // 分位数语义：P50 = 50% 的秒低于该值，P99 = 99% 的秒低于该值（均指每秒 token 数）。
     // TG 的样本 = 解码阶段的秒级桶；PP 的预填是亚秒级完成的，单轮内无法形成
     // “每秒”分布，故 PP 的分位数在跨轮层面统计（每轮一个 PP 速率样本）。
-    let tgPct = null;
-    if(secStats && secStats.samples && secStats.samples.length >= 2){
-      const sorted = [...secStats.samples].sort((x, y) => x - y);
-      tgPct = {
-        p50: sorted[Math.min(sorted.length - 1, Math.floor(0.5 * sorted.length))],
-        p99: sorted[Math.min(sorted.length - 1, Math.floor(0.99 * sorted.length))]
-      };
-    }
     const completionTokens = outTokens;
     let src;
     if(nonStream) src = '非流式端点（仅统计 token/耗时）';
@@ -1288,7 +1279,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     else if(hadReasoning) src += ' · 含思考';
     return { type: type.name, id: type.id, round, ttftMs, ppTps, tgTps,
              promptTokens, completionTokens, totalMs: tEnd - t0, finish, src, outText, hadReasoning,
-             secStats, tgPct, ppSample: ppTps };
+             secStats };
   }
   
   // 思考禁用参数探测：思考模型的思考 token 会挤占 max_tokens 并污染 PP/TG 口径，
@@ -1404,7 +1395,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
 
   // 列顺序（与表头一致）：类型/轮/TTFT/PP最低/PP平均/PP最高/TG最低/TG平均/TG最高/
   // prompt tok/生成 tok/总耗时/数据来源 —— 共 13 列
-  const BENCH_COLS = 11;
+  const BENCH_COLS = 9;
   function benchRow(cells){
     const tr = document.createElement('tr');
     for(let i = 0; i < BENCH_COLS; i++){
@@ -1422,17 +1413,13 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
   // 单轮 = 该轮解码窗口内的秒级统计；多轮 = 先各轮秒级、再聚合各轮的 min/max/avg。
   function benchAddRow(r){
     const ss = r.secStats;
-    const tgPct = r.tgPct;
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
       // PP 无轮内分布（预填期间服务端不发送数据），单轮只显示一个速率；
-      // 分布只在多轮间成立（见汇总行的跨轮 MIN/MAX/AVG 与 P50/P99）。
+      // 分布只在多轮间成立（见汇总行的跨轮 MIN/MAX/AVG）。
       f1(r.ppTps),
       ss ? mmaCell(ss.min, ss.max, ss.avg) : (r.tgTps != null ? mmaCell(r.tgTps, r.tgTps, r.tgTps) : null),
-      // PP 分位数是跨轮统计：单轮行内只有本轮一个样本，P50 = P99 = 本轮值
-      (r.ppTps != null && r.ppSample != null) ? (f1(r.ppSample) + ' / ' + f1(r.ppSample)) : null,
-      tgPct ? (f1(tgPct.p50) + ' / ' + f1(tgPct.p99)) : null,
       r.promptTokens, r.completionTokens,
       fS(r.totalMs),
       r.src
@@ -1463,24 +1450,12 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     const totals = pick('totalMs');
     const pTok = pick('promptTokens'), cTok = pick('completionTokens');
     const range = (a, d) => a.length ? Math.min(...a).toFixed(d) + ' ~ ' + Math.max(...a).toFixed(d) : null;
-    // 跨轮分位数：PP 对各轮的 PP 速率取分位数；TG 对所有轮的秒级样本取分位数。
-    // P50 = 50% 的秒/轮低于该值，P99 = 99% 低于该值。
-    const pct = (a) => {
-      if(!a.length) return null;
-      const sorted = [...a].sort((x, y) => x - y);
-      const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
-      return { p50: q(0.5), p99: q(0.99) };
-    };
-    const ppPct = pct(pick('ppSample'));
-    const tgPct = secPool.length ? pct(secPool) : null;
     benchRow([
       type.name, rows.length + ' 轮汇总',
       ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : null,
       mmaCell(pp && pp.min, pp && pp.max, pp && pp.avg),
       secAgg ? mmaCell(secAgg.min, secAgg.max, secAgg.avg)
              : mmaCell(tg && tg.min, tg && tg.max, tg && tg.avg),
-      ppPct ? (f1(ppPct.p50) + ' / ' + f1(ppPct.p99)) : null,
-      tgPct ? (f1(tgPct.p50) + ' / ' + f1(tgPct.p99)) : null,
       range(pTok, 0), range(cTok, 0),
       totals.length ? (Math.min(...totals) / 1000).toFixed(2) + ' ~ ' + (Math.max(...totals) / 1000).toFixed(2) + ' s' : null,
       rows[0].src
