@@ -288,7 +288,7 @@
   <div class="bench-scroll">
     <table class="btable">
       <thead><tr>
-        <th>类型</th><th>轮</th><th>TTFT</th><th>PP 最低</th><th>PP 平均</th><th>PP 最高</th><th>TG 最低</th><th>TG 平均</th><th>TG 最高</th>
+        <th>类型</th><th>轮</th><th>TTFT</th><th>PP MIN/MAX/AVG</th><th>TG MIN/MAX/AVG</th>
         <th>prompt tok</th><th>生成 tok</th><th>总耗时</th><th>数据来源</th>
       </tr></thead>
       <tbody id="benchRows"></tbody>
@@ -740,10 +740,11 @@
     }
     return false;
   }
+  let benchRunSalt = 0; // 每次测速随机盐：页面刷新后种子也不会重放，杜绝跨会话的 cache 命中
   function benchSeedFor(type, round){
     let h = 0;
     for(let i = 0; i < type.id.length; i++) h = (h * 31 + type.id.charCodeAt(i)) & 0x7fffffff;
-    return (h + round * 7919 + benchRunSeq * 104729) & 0x7fffffff;
+    return (h + round * 7919 + benchRunSeq * 104729 + benchRunSalt) & 0x7fffffff;
   }
   // 5 类 prompt：任务可预测性不同，用以检验预测解码（speculative decoding）在不同场景的收益
   const BENCH_TYPES = [
@@ -814,6 +815,9 @@
       const report = benchFiller(Math.max(16, pp - 20), seed);
       user = report + '\n\nThe text above is a quarterly report. Reply with exactly one word: OK';
     }
+    // 唯一 nonce 前缀：让每一轮 prompt 从第 1 个 token 就不同，
+    // 彻底击穿服务端 prompt/prefix cache——否则缓存命中的轮次 TTFT 骤降，PP 被虚高数倍。
+    user = '[variant ' + ((seed || 0) >>> 0).toString(16) + ']\n\n' + user;
     return { messages:[{ role:'user', content:user }], est: benchEstTokens(user), chars: user.length };
   }
 
@@ -903,16 +907,14 @@
       }
       if(!tEnd) tEnd = performance.now();
     }
-    // 用服务端回报的真实 prompt_tokens 校准填充文本的 chars/token 比率，越跑越准
-    if(usage && usage.prompt_tokens > 0){
-      benchCharsPerTok = Math.min(8, Math.max(2, promptChars / usage.prompt_tokens));
+    // 用服务端回报的真实 prompt_tokens 校准 chars/token 比率：
+    // EWMA 平滑（防单样本震荡），且只采信 >=256 token 的样本（小探测噪声大）
+    if(usage && usage.prompt_tokens >= 256){
+      const r = promptChars / usage.prompt_tokens;
+      benchCharsPerTok = Math.min(8, Math.max(2, benchCharsPerTok * 0.6 + r * 0.4));
     }
     const ttftMs = tFirst - t0;
     const winMs = Math.max(0, (tLastDelta || tEnd) - tFirst); // 解码窗口：首增量 → 末增量（客户端实测）
-    // 用服务端回报的真实 prompt_tokens 校准填充文本的 chars/token 比率，越跑越准
-    if(usage && usage.prompt_tokens > 0){
-      benchCharsPerTok = Math.min(8, Math.max(2, promptChars / usage.prompt_tokens));
-    }
     const promptTokens = (usage && usage.prompt_tokens != null) ? usage.prompt_tokens : est;
     // 输出 token 数判定顺序：
     // 1) 服务端 completion 计数与实测增量块数（llama.cpp/vLLM 约每 token 一帧）自洽 → 采用服务端值；
@@ -1066,7 +1068,7 @@
 
   // 列顺序（与表头一致）：类型/轮/TTFT/PP最低/PP平均/PP最高/TG最低/TG平均/TG最高/
   // prompt tok/生成 tok/总耗时/数据来源 —— 共 13 列
-  const BENCH_COLS = 13;
+  const BENCH_COLS = 9;
   function benchRow(cells){
     const tr = document.createElement('tr');
     for(let i = 0; i < BENCH_COLS; i++){
@@ -1084,8 +1086,8 @@
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
-      f1(r.ppTps), f1(r.ppTps), f1(r.ppTps),
-      f1(r.tgTps), f1(r.tgTps), f1(r.tgTps),
+      f1(r.ppTps),
+      f1(r.tgTps),
       r.promptTokens, r.completionTokens,
       fS(r.totalMs),
       r.src
@@ -1106,8 +1108,8 @@
     benchRow([
       type.name, rows.length + ' 轮汇总',
       ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : null,
-      f1(pp && pp.min), f1(pp && pp.avg), f1(pp && pp.max),
-      f1(tg && tg.min), f1(tg && tg.avg), f1(tg && tg.max),
+      f1(pp && pp.min) + ' / ' + f1(pp && pp.avg) + ' / ' + f1(pp && pp.max),
+      f1(tg && tg.min) + ' / ' + f1(tg && tg.avg) + ' / ' + f1(tg && tg.max),
       range(pTok, 0), range(cTok, 0),
       totals.length ? (Math.min(...totals) / 1000).toFixed(2) + ' ~ ' + (Math.max(...totals) / 1000).toFixed(2) + ' s' : null,
       rows[0].src
@@ -1175,6 +1177,7 @@
     if(!types.length){ toast('请至少勾选一种 prompt 类型', true); return; }
     benchRunning = true; benchAbort = new AbortController();
     benchRunSeq++;
+    benchRunSalt = (Date.now() & 0x7fffffff) ^ (Math.random() * 0x7fffffff | 0);
     benchRunBtn.disabled = true; benchStopBtn.disabled = false; benchCopyBtn.disabled = true;
     benchResultsKey = base + '|' + model.value.trim();
     benchClearResults();
