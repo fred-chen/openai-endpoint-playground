@@ -289,6 +289,7 @@
     <table class="btable">
       <thead><tr>
         <th>类型</th><th>轮</th><th>TTFT</th><th>PP MIN/MAX/AVG</th><th>TG MIN/MAX/AVG</th>
+        <th>PP P50/P99</th><th>TG P50/P99</th>
         <th>prompt tok</th><th>生成 tok</th><th>总耗时</th><th>数据来源</th>
       </tr></thead>
       <tbody id="benchRows"></tbody>
@@ -1105,7 +1106,7 @@
 
   // 列顺序（与表头一致）：类型/轮/TTFT/PP最低/PP平均/PP最高/TG最低/TG平均/TG最高/
   // prompt tok/生成 tok/总耗时/数据来源 —— 共 13 列
-  const BENCH_COLS = 9;
+  const BENCH_COLS = 11;
   function benchRow(cells){
     const tr = document.createElement('tr');
     for(let i = 0; i < BENCH_COLS; i++){
