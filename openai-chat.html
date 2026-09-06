@@ -742,6 +742,28 @@
     return false;
   }
   let benchRunSalt = 0; // 每次测速随机盐：页面刷新后种子也不会重放，杜绝跨会话的 cache 命中
+  let benchCalibKey = ''; // chars/token 校准缓存键：端点|模型
+  // 用一份已知字符数的填充文本量出该 tokenizer 的真实 chars/token 比率，
+  // 之后据此构造 prompt，使实际 prompt token 数精确命中用户输入的 PP。
+  async function benchCalibrateRatio(base){
+    try{
+      const target = Math.round(20000 / (benchCharsPerTok || 4.3));
+      const probeText = benchFiller(target);
+      const pChars = probeText.length;
+      const body = { model: model.value.trim(), messages:[{ role:'user', content: probeText }], stream:false, max_tokens:1 };
+      if(benchUseStreamOptions) body.stream_options = { include_usage:true };
+      const res = await fetch(base + '/chat/completions', {
+        method:'POST', headers: headers({'Content-Type':'application/json'}),
+        body: JSON.stringify(body), signal: benchAbort.signal
+      });
+      if(!res.ok) return;
+      const j = await res.json();
+      if(j.usage && j.usage.prompt_tokens > 0){
+        const r = pChars / j.usage.prompt_tokens;
+        if(r > 2 && r < 8) benchCharsPerTok = r; // 限定合理范围，防止异常服务端污染
+      }
+    }catch(e){ /* 静默：校准失败则沿用已有比率 */ }
+  }
   function benchSeedFor(type, round){
     let h = 0;
     for(let i = 0; i < type.id.length; i++) h = (h * 31 + type.id.charCodeAt(i)) & 0x7fffffff;
@@ -1128,9 +1150,9 @@
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
-      // PP 无轮内分布可用：预填期间服务端不发送任何数据（首 token 前客户端只能等），
-      // 单轮只能给出一个速率（prompt tokens / 到首 token 的时延）。分布只在多轮间成立。
-      mmaCell(r.ppTps, r.ppTps, r.ppTps),
+      // PP 无轮内分布（预填期间服务端不发送数据），单轮只显示一个速率；
+      // 分布只在多轮间成立（见汇总行的跨轮 MIN/MAX/AVG 与 P50/P99）。
+      f1(r.ppTps),
       ss ? mmaCell(ss.min, ss.max, ss.avg) : (r.tgTps != null ? mmaCell(r.tgTps, r.tgTps, r.tgTps) : null),
       // PP 分位数是跨轮统计：单轮行内只有本轮一个样本，P50 = P99 = 本轮值
       (r.ppTps != null && r.ppSample != null) ? (f1(r.ppSample) + ' / ' + f1(r.ppSample)) : null,
@@ -1257,6 +1279,14 @@
     benchStatusEl.style.display = 'flex'; benchStatusEl.className = 'statusbar'; benchSpinner.style.display = '';
     const total = types.length * rounds;
     try{
+      // char/token 比率校准：每个 端点|模型 组合先量出真实分词比率，
+      // 让后面构造的 prompt 精确命中用户输入的 PP token 数。
+      const ck = base + '|' + model.value.trim();
+      if(benchCalibKey !== ck){
+        benchCalibKey = ck;
+        benchSetStatus('校准分词比率…', '测量该模型的 chars/token，确保 PP 精确');
+        await benchCalibrateRatio(base);
+      }
       // 思考禁用探测：每个 端点|模型 组合只探一次（思考 token 会挤占 max_tokens 并污染 PP/TG）
       const tk = base + '|' + model.value.trim();
       if(benchThinkOffKey !== tk){
