@@ -951,8 +951,9 @@
     // 服务端常把多个 token 打包进一个 delta（批次推送），直接数 delta 会低估，
     // 故每 delta 按 tokensPerDelta = outTokens / nDeltas 折算。
     let secStats = null;
+    const perDeltaTok = (nDeltas > 0) ? outTokens / nDeltas : 0;
     if(!nonStream && deltaTimes.length >= 2 && winMs >= 1000){
-      const perDelta = outTokens / nDeltas;
+      const perDelta = perDeltaTok;
       const buckets = new Map();
       for(const ts of deltaTimes){
         const sec = Math.floor((ts - tFirst) / 1000);
@@ -967,6 +968,17 @@
         };
       }
     }
+    // 分位数语义：P50 = 50% 的秒低于该值，P99 = 99% 的秒低于该值（均指每秒 token 数）。
+    // TG 的样本 = 解码阶段的秒级桶；PP 的预填是亚秒级完成的，单轮内无法形成
+    // “每秒”分布，故 PP 的分位数在跨轮层面统计（每轮一个 PP 速率样本）。
+    let tgPct = null;
+    if(secStats && secStats.samples && secStats.samples.length >= 2){
+      const sorted = [...secStats.samples].sort((x, y) => x - y);
+      tgPct = {
+        p50: sorted[Math.min(sorted.length - 1, Math.floor(0.5 * sorted.length))],
+        p99: sorted[Math.min(sorted.length - 1, Math.floor(0.99 * sorted.length))]
+      };
+    }
     const completionTokens = outTokens;
     let src;
     if(nonStream) src = '非流式端点（仅统计 token/耗时）';
@@ -977,7 +989,7 @@
     else if(hadReasoning) src += ' · 含思考';
     return { type: type.name, id: type.id, round, ttftMs, ppTps, tgTps,
              promptTokens, completionTokens, totalMs: tEnd - t0, finish, src, outText, hadReasoning,
-             secStats };
+             secStats, tgPct, ppSample: ppTps };
   }
   
   // 思考禁用参数探测：思考模型的思考 token 会挤占 max_tokens 并污染 PP/TG 口径，
@@ -1111,11 +1123,15 @@
   // 单轮 = 该轮解码窗口内的秒级统计；多轮 = 先各轮秒级、再聚合各轮的 min/max/avg。
   function benchAddRow(r){
     const ss = r.secStats;
+    const tgPct = r.tgPct;
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
       f1(r.ppTps),
       ss ? mmaCell(ss.min, ss.max, ss.avg) : (r.tgTps != null ? mmaCell(r.tgTps, r.tgTps, r.tgTps) : null),
+      // PP 分位数是跨轮统计：单轮行内只有本轮一个样本，P50 = P99 = 本轮值
+      (r.ppTps != null && r.ppSample != null) ? (f1(r.ppSample) + ' / ' + f1(r.ppSample)) : null,
+      tgPct ? (f1(tgPct.p50) + ' / ' + f1(tgPct.p99)) : null,
       r.promptTokens, r.completionTokens,
       fS(r.totalMs),
       r.src
@@ -1146,12 +1162,24 @@
     const totals = pick('totalMs');
     const pTok = pick('promptTokens'), cTok = pick('completionTokens');
     const range = (a, d) => a.length ? Math.min(...a).toFixed(d) + ' ~ ' + Math.max(...a).toFixed(d) : null;
+    // 跨轮分位数：PP 对各轮的 PP 速率取分位数；TG 对所有轮的秒级样本取分位数。
+    // P50 = 50% 的秒/轮低于该值，P99 = 99% 低于该值。
+    const pct = (a) => {
+      if(!a.length) return null;
+      const sorted = [...a].sort((x, y) => x - y);
+      const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+      return { p50: q(0.5), p99: q(0.99) };
+    };
+    const ppPct = pct(pick('ppSample'));
+    const tgPct = secPool.length ? pct(secPool) : null;
     benchRow([
       type.name, rows.length + ' 轮汇总',
       ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : null,
       mmaCell(pp && pp.min, pp && pp.max, pp && pp.avg),
       secAgg ? mmaCell(secAgg.min, secAgg.max, secAgg.avg)
              : mmaCell(tg && tg.min, tg && tg.max, tg && tg.avg),
+      ppPct ? (f1(ppPct.p50) + ' / ' + f1(ppPct.p99)) : null,
+      tgPct ? (f1(tgPct.p50) + ' / ' + f1(tgPct.p99)) : null,
       range(pTok, 0), range(cTok, 0),
       totals.length ? (Math.min(...totals) / 1000).toFixed(2) + ' ~ ' + (Math.max(...totals) / 1000).toFixed(2) + ' s' : null,
       rows[0].src
