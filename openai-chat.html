@@ -962,7 +962,8 @@
       if(perSec.length){
         secStats = {
           min: Math.min(...perSec), max: Math.max(...perSec),
-          avg: outTokens / (winMs / 1000)  // 平均秒速 = 总 token / 实际秒数
+          avg: outTokens / (winMs / 1000),  // 平均秒速 = 总 token / 实际秒数
+          samples: perSec                    // 完整的每秒样本，多轮聚合时并入全局池
         };
       }
     }
@@ -1131,15 +1132,15 @@
       min: Math.min(...a), max: Math.max(...a),
       avg: a.reduce((s, x) => s + x, 0) / a.length } : null;
     const pp = st(pick('ppTps')), tg = st(pick('tgTps'));
-    // 聚合各轮的秒级样本：把每轮的每秒 token 数并入同一个池子再取 min/max/avg
+    // 多轮聚合：把所有轮的每秒样本全部并入同一个池子，再取 min/max/avg。
+    // 样本总量 = 各轮解码秒数之和，轮数越多统计越稳。
     const secPool = [];
     for(const r of rows){
-      if(r.secStats){ secPool.push(r.secStats.min, r.secStats.max); }
-      // avg 不能直接并池（各轮秒数不同），按轮加权：avg 池里放 avg，权重相同
+      if(r.secStats && r.secStats.samples) secPool.push(...r.secStats.samples);
     }
     const secAgg = secPool.length ? {
       min: Math.min(...secPool), max: Math.max(...secPool),
-      avg: rows.filter(r => r.secStats).reduce((s, r) => s + r.secStats.avg, 0) / rows.filter(r => r.secStats).length
+      avg: secPool.reduce((s, x) => s + x, 0) / secPool.length
     } : null;
     const ttfts = pick('ttftMs');
     const totals = pick('totalMs');
