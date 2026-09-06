@@ -1096,6 +1096,9 @@
   }
 
   // 多轮汇总行：PP/TG 各拆最低、平均、最高三列；轮数与总耗时也给出统计
+  // MIN/MAX/AVG 单元格统一格式：min - max - avg（单轮时三者相同）
+  const mmaCell = (min, max, avg) => (min != null && max != null && avg != null)
+    ? f1(min) + ' - ' + f1(max) + ' - ' + f1(avg) : null;
   function benchAddAggRow(type, rows){
     const pick = (k) => rows.map(r => r[k]).filter(v => v != null);
     const st = (a) => a.length ? {
