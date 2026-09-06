@@ -26,14 +26,14 @@ open openai-chat.html        # macOS
 ```
 
 填入端点地址 → 刷新模型 → 输入提示词 → 发送。点工具条「⚡ 测速」可对当前端点/模型做 PP / TG / TTFT 压测。
-> **https 页面调用 http 端点会被浏览器拦截（混合内容）**：在线地址是 https，若你的端点是 http（如局域网 `http://ai395:8080/v1`），安全页面不能直接访问 http 接口，会报 `Failed to fetch`。这不是 CORS 问题。解决办法见下方「连接 http 端点」。
+> **https 页面调用 http 端点会被浏览器拦截（混合内容）**：在线地址是 https，若你的端点是 http（如局域网 `http://ai4090:8080/v1`），安全页面不能直接访问 http 接口，会报 `Failed to fetch`。这不是 CORS 问题。解决办法见下方「连接 http 端点」。
 
 ## 连接 http 端点（混合内容）
 
 在线页是 **https**，浏览器禁止 https 页面请求 **http** 接口（混合内容），表现为 `获取模型失败：Failed to fetch`。两种解法，任选其一：
 
 1. **本地直接打开（推荐）**：`open openai-chat.html`（或任意 http 本地服务），本地页面访问 http 内网端点不受混合内容限制。
-2. **给端点配 HTTPS**：为 `ai395:8080` 配上 TLS，或放到同源的 https 反向代理后面，在线页即可直连。
+2. **给端点配 HTTPS**：为 `ai4090:8080` 配上 TLS，或放到同源的 https 反向代理后面，在线页即可直连。
 
 ## 自动部署
 
