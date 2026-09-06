@@ -721,6 +721,8 @@
   const benchTargetEl = $('benchTarget');
   const coherenceChk = $('benchCoherence');
   let benchCoherence = {}; // 预检结果：{typeId: issues[]}
+  let benchResultsKey = ''; // 结果归属戳：'端点|模型'，模型或端点变更后旧结果即失效
+  const BENCH_SUMMARY_DEFAULT = '尚未运行。不同 prompt 类型可检验预测解码在不同任务上的收益：重复列表收益通常最大，代码生成通常最小。';
   let benchOpenState = false, benchAbort = null, benchRunning = false;
   let benchResults = [], benchUseStreamOptions = true;
   let benchCharsPerTok = 4.3; // 填充文本的 chars/token 比率，每轮用服务端回报的真实 token 数自校准
@@ -988,8 +990,8 @@
     if(!types.length){ toast('请至少勾选一种 prompt 类型', true); return; }
     benchRunning = true; benchAbort = new AbortController();
     benchRunBtn.disabled = true; benchStopBtn.disabled = false; benchCopyBtn.disabled = true;
-    benchRowsEl.innerHTML = ''; benchResults = []; benchCoherence = {}; benchRenderSummary();
-    BENCH_TYPES.forEach(t => { const cb = $('bt_' + t.id); const chip = cb && cb.closest('.chip'); const m = chip && chip.querySelector('.mark'); if(m) m.remove(); });
+    benchResultsKey = base + '|' + model.value.trim();
+    benchClearResults();
     benchStatusEl.style.display = 'flex'; benchStatusEl.className = 'statusbar'; benchSpinner.style.display = '';
     const total = types.length * rounds;
     try{
@@ -1049,10 +1051,34 @@
     }else fallback();
   }
 
+  // 清空结果与预检标记（换模型/端点后旧结果不再展示；正式开跑前也会调用）
+  function benchClearResults(){
+    benchResults = []; benchCoherence = {};
+    benchRowsEl.innerHTML = '';
+    BENCH_TYPES.forEach(t => {
+      const cb = $('bt_' + t.id);
+      const chip = cb && cb.closest('.chip');
+      const m = chip && chip.querySelector('.mark');
+      if(m) m.remove();
+    });
+    benchSummaryEl.textContent = BENCH_SUMMARY_DEFAULT;
+    benchCopyBtn.disabled = true;
+    benchStatusEl.style.display = 'none';
+    benchStatusEl.className = 'statusbar';
+  }
+
   function openBench(){
     benchOpenState = true;
     benchPanel.classList.add('open');
     document.body.classList.add('bench-open');
+    // 模型或端点已变更：旧结果属于上一个模型，直接清空（连同按旧模型校准的比率）
+    const key = normalizeBase(endpoint.value) + '|' + model.value.trim();
+    if(benchResultsKey && benchResultsKey !== key){
+      benchResultsKey = '';
+      benchCharsPerTok = 4.3;
+      benchUseStreamOptions = true;
+      benchClearResults();
+    }
     benchTargetEl.textContent = '模型：' + (model.value.trim() || '未设置')
       + ' · 温度固定 0.2 · PP/TG 优先采用服务端 usage 统计';
   }
