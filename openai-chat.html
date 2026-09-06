@@ -141,6 +141,9 @@
   .bench-head h2{margin:0;font-size:15px}
   .bench-head .sub{color:var(--muted);font-size:11.5px}
   .bench-params{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none}
+  .chip .mark{font-weight:700}
+  .chip .mark.ok{color:var(--ok)}
+  .chip .mark.warn{color:#e8a33d}
   .bench-types{display:flex;flex-wrap:wrap;gap:6px;flex:none;margin:2px 0 6px}
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--border);
     border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
@@ -268,6 +271,7 @@
     <div class="ifield num"><label for="ppTokens">PP tokens</label><input id="ppTokens" type="number" value="512" min="16" step="16" /></div>
     <div class="ifield num"><label for="tgTokens">TG tokens</label><input id="tgTokens" type="number" value="128" min="16" step="16" /></div>
     <div class="ifield num"><label for="benchRounds">每类轮数</label><input id="benchRounds" type="number" value="1" min="1" max="10" step="1" /></div>
+    <label class="chk" title="预热前对每类 prompt 各跑一次短生成，检查输出连贯性（乱码 / 退化重复 / 过短）；探测失败会中止测速"><input type="checkbox" id="benchCoherence" checked /> coherence 预检</label>
     <label class="chk" title="正式计时前先跑一轮小请求，排除模型加载 / 连接建立的影响"><input type="checkbox" id="benchWarmup" checked /> 先预热</label>
     <span style="flex:1"></span>
     <button class="btn" id="benchRun">▶ 开始测速</button>
@@ -715,6 +719,8 @@
   const benchStatusEl = $('benchStatus'), benchStatusMsg = $('benchStatusMsg'), benchStatusMeta = $('benchStatusMeta');
   const benchSpinner = $('benchSpinner');
   const benchTargetEl = $('benchTarget');
+  const coherenceChk = $('benchCoherence');
+  let benchCoherence = {}; // 预检结果：{typeId: issues[]}
   let benchOpenState = false, benchAbort = null, benchRunning = false;
   let benchResults = [], benchUseStreamOptions = true;
   let benchCharsPerTok = 4.3; // 填充文本的 chars/token 比率，每轮用服务端回报的真实 token 数自校准
@@ -803,12 +809,16 @@
     }
     const ct = res.headers.get('content-type') || '';
     let tFirst = 0, tEnd = 0, chars = 0, usage = null, finish = '';
+    let outText = ''; // coherence 预检用：收集输出全文（量很小，正式测速轮忽略）
     if(!ct.includes('event-stream')){ // 服务端不支持流式：退化为整体返回
       const j = await res.json();
       tFirst = tEnd = performance.now();
       usage = j.usage || null;
       const m = j.choices && j.choices[0] && j.choices[0].message;
-      if(m) chars = ((m.content || '') + ((m.reasoning_content ?? m.reasoning) || '')).length;
+      if(m){
+        outText = ((m.content || '') + ((m.reasoning_content ?? m.reasoning) || ''));
+        chars = outText.length;
+      }
       finish = (j.choices && j.choices[0] && j.choices[0].finish_reason) || '';
     }else{
       const reader = res.body.getReader();
@@ -832,7 +842,8 @@
             const d = ch && ch.delta;
             if(d && (d.content != null || d.reasoning_content != null || d.reasoning != null)){
               if(!tFirst) tFirst = performance.now();
-              chars += ((d.content || '') + ((d.reasoning_content ?? d.reasoning) || '')).length;
+              outText += (d.content || '') + ((d.reasoning_content ?? d.reasoning) || '');
+              chars = outText.length;
             }
             if(ch && ch.finish_reason) finish = ch.finish_reason;
           }
@@ -857,7 +868,59 @@
     const tgTps = serverTps != null ? serverTps : (genMs > 0 && completionTokens > 1 ? (completionTokens - 1) / (genMs / 1000) : null);
     const src = serverPps != null ? '服务端 usage' : (usage ? 'usage tokens + 客户端计时' : '≈ 客户端估算');
     return { type: type.name, id: type.id, round, ttftMs, ppTps, tgTps,
-             promptTokens, completionTokens, totalMs: tEnd - t0, finish, src };
+             promptTokens, completionTokens, totalMs: tEnd - t0, finish, src, outText };
+  }
+
+  // coherence 预检：输出过短 / 乱码控制字符 / 退化重复 / 单字符刷屏 / 语言异常
+  // 返回问题描述数组；空数组 = 通过。软警告（语言）不阻断测速，仅标注。
+  function benchCoherenceIssues(text){
+    const issues = [];
+    const t = (text || '').replace(/^\s+/, '');
+    if(t.trim().length < 24) issues.push('输出过短（' + t.trim().length + ' 字）');
+    if(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F\uE000-\uF8FF]/.test(t)) issues.push('含乱码 / 控制字符');
+    if(/(.)\1{7,}/.test(t.replace(/\s+/g,''))) issues.push('单字符连续刷屏');
+    // 词级 n-gram 退化重复：短输出中同一 5 词短语重复 >=3 次
+    const words = (t.toLowerCase().match(/[a-z\u4e00-\u9fff']+/g) || []);
+    if(words.length >= 15){
+      const N = 5, grams = {}; let max = 1;
+      for(let i = 0; i + N <= words.length; i++){
+        const g = words.slice(i, i + N).join(' ');
+        grams[g] = (grams[g] || 0) + 1;
+        if(grams[g] > max) max = grams[g];
+      }
+      if(max >= 3) issues.push('疑似退化重复（5 词短语重复 ' + max + ' 次）');
+    }
+    // 软警告：英文/法文任务输出却以 CJK 为主（可能是端点行为异常）
+    const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+    if(t.length >= 40 && cjk / t.length > 0.7) issues.push('语言异常（prompt 为英文，输出以中文为主）');
+    return issues;
+  }
+
+  // 预检结果标记到对应类型 chip 上
+  function benchMarkChip(id, ok, tip){
+    const cb = $('bt_' + id);
+    const chip = cb && cb.closest('.chip');
+    if(!chip) return;
+    let mark = chip.querySelector('.mark');
+    if(!mark){ mark = document.createElement('span'); mark.className = 'mark'; chip.appendChild(mark); }
+    mark.textContent = ok ? '✓' : '⚠';
+    mark.classList.toggle('ok', ok);
+    mark.classList.toggle('warn', !ok);
+    chip.title = tip;
+  }
+
+  // coherence 门控：预热前对每类 prompt 各跑一次短生成并检查输出质量
+  async function benchCoherenceGate(types){
+    benchCoherence = {};
+    types.forEach(t => benchMarkChip(t.id, true, t.tip));
+    for(let i = 0; i < types.length; i++){
+      const t = types[i];
+      benchSetStatus('coherence 预检 ' + (i + 1) + '/' + types.length + '：' + t.name + '…', '短生成探测，不计入结果');
+      const r = await benchOnce(t, 0, 128, 48);
+      const issues = benchCoherenceIssues(r.outText);
+      benchCoherence[t.id] = issues;
+      benchMarkChip(t.id, issues.length === 0, t.tip + (issues.length ? ' · coherence: ' + issues.join('；') : ' · coherence ✓'));
+    }
   }
 
   function benchAddRow(r){
@@ -896,11 +959,19 @@
       const rs = benchResults.filter(r => r.id === t.id && r.tgTps != null);
       return rs.length ? t.name + ' <b>' + benchMedian(rs.map(r => r.tgTps)).toFixed(1) + '</b>' : null;
     }).filter(Boolean);
-    benchSummaryEl.innerHTML = '共 <b>' + benchResults.length + '</b> 轮 · TTFT 中位 <b>' + (tt != null ? benchFmtMs(tt) : '—')
+    const cohKeys = Object.keys(benchCoherence);
+    const cohLine = cohKeys.length
+      ? '<br>coherence 预检：' + cohKeys.map(id => {
+          const t = BENCH_TYPES.find(x => x.id === id);
+          const iss = benchCoherence[id];
+          return (t ? t.name : id) + (iss.length ? ' <span style="color:#e8a33d">⚠ ' + iss.join('；') + '</span>' : ' ✓');
+        }).join(' · ')
+      : '';
     benchSummaryEl.innerHTML = '共 <b>' + benchResults.length + '</b> 轮 · TTFT 中位 <b>' + (tt != null ? benchFmtMs(tt) : '—') + '</b>'
       + ' · PP 中位 <b>' + (pp != null ? pp.toFixed(1) : '—') + ' tok/s</b>'
       + ' · TG 中位 <b>' + (tg != null ? tg.toFixed(1) : '—') + ' tok/s</b>'
-      + (byType.length ? '<br>分类型 TG 中位（tok/s）：' + byType.join(' · ') : '');
+      + (byType.length ? '<br>分类型 TG 中位（tok/s）：' + byType.join(' · ') : '')
+      + cohLine;
   }
 
   async function runBench(){
@@ -917,10 +988,12 @@
     if(!types.length){ toast('请至少勾选一种 prompt 类型', true); return; }
     benchRunning = true; benchAbort = new AbortController();
     benchRunBtn.disabled = true; benchStopBtn.disabled = false; benchCopyBtn.disabled = true;
-    benchRowsEl.innerHTML = ''; benchResults = []; benchRenderSummary();
+    benchRowsEl.innerHTML = ''; benchResults = []; benchCoherence = {}; benchRenderSummary();
+    BENCH_TYPES.forEach(t => { const cb = $('bt_' + t.id); const chip = cb && cb.closest('.chip'); const m = chip && chip.querySelector('.mark'); if(m) m.remove(); });
     benchStatusEl.style.display = 'flex'; benchStatusEl.className = 'statusbar'; benchSpinner.style.display = '';
     const total = types.length * rounds;
     try{
+      if(coherenceChk.checked) await benchCoherenceGate(types);
       if(warmupChk.checked){
         benchSetStatus('预热中（不计入结果）…', '');
         await benchOnce(BENCH_TYPES[0], 0, 64, 16);
