@@ -288,7 +288,7 @@
   <div class="bench-scroll">
     <table class="btable">
       <thead><tr>
-        <th>类型</th><th>轮</th><th>TTFT</th><th>PP tok/s</th><th>TG tok/s</th>
+        <th>类型</th><th>轮</th><th>TTFT</th><th>PP 最低</th><th>PP 平均</th><th>PP 最高</th><th>TG 最低</th><th>TG 平均</th><th>TG 最高</th>
         <th>prompt tok</th><th>生成 tok</th><th>总耗时</th><th>数据来源</th>
       </tr></thead>
       <tbody id="benchRows"></tbody>
@@ -1064,53 +1064,54 @@
     }
   }
 
-  function benchAddRow(r){
+  // 列顺序（与表头一致）：类型/轮/TTFT/PP最低/PP平均/PP最高/TG最低/TG平均/TG最高/
+  // prompt tok/生成 tok/总耗时/数据来源 —— 共 13 列
+  const BENCH_COLS = 13;
+  function benchRow(cells){
     const tr = document.createElement('tr');
-    const cells = [
-      r.type, r.round,
-      r.ttftMs != null ? benchFmtMs(r.ttftMs) : '—',
-      r.ppTps != null ? r.ppTps.toFixed(1) : '—',
-      r.tgTps != null ? r.tgTps.toFixed(1) : '—',
-      r.promptTokens != null ? r.promptTokens : '—',
-      r.completionTokens != null ? r.completionTokens : '—',
-      r.totalMs != null ? (r.totalMs / 1000).toFixed(2) + ' s' : '—',
-      r.src
-    ];
-    cells.forEach((c, i) => {
+    for(let i = 0; i < BENCH_COLS; i++){
       const td = document.createElement('td');
-      if(i === 8) td.className = 'src';
-      td.textContent = c;
+      if(i === BENCH_COLS - 1) td.className = 'src';
+      td.textContent = cells[i] != null ? cells[i] : '—';
       tr.appendChild(td);
-    });
+    }
     benchRowsEl.appendChild(tr);
   }
+  const f1 = v => v != null ? v.toFixed(1) : null;
+  const fS = v => v != null ? (v / 1000).toFixed(2) + ' s' : null;
 
-  // 多轮汇总行：min / avg / max 三列速率 + TTFT 范围；round 列标注轮数
+  function benchAddRow(r){
+    benchRow([
+      r.type, r.round,
+      r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
+      f1(r.ppTps), f1(r.ppTps), f1(r.ppTps),
+      f1(r.tgTps), f1(r.tgTps), f1(r.tgTps),
+      r.promptTokens, r.completionTokens,
+      fS(r.totalMs),
+      r.src
+    ]);
+  }
+
+  // 多轮汇总行：PP/TG 各拆最低、平均、最高三列；轮数与总耗时也给出统计
   function benchAddAggRow(type, rows){
-    const ttfts = rows.map(r => r.ttftMs).filter(v => v != null);
     const pick = (k) => rows.map(r => r[k]).filter(v => v != null);
-    const pp = pick('ppTps'), tg = pick('tgTps');
-    const rng = (a, d) => a.length ? (Math.min(...a)).toFixed(d) + ' ~ ' + (Math.max(...a)).toFixed(d)
-                        + '（avg ' + (a.reduce((s, x) => s + x, 0) / a.length).toFixed(d) + '）' : '—';
+    const st = (a) => a.length ? {
+      min: Math.min(...a), max: Math.max(...a),
+      avg: a.reduce((s, x) => s + x, 0) / a.length } : null;
+    const pp = st(pick('ppTps')), tg = st(pick('tgTps'));
+    const ttfts = pick('ttftMs');
+    const totals = pick('totalMs');
     const pTok = pick('promptTokens'), cTok = pick('completionTokens');
-    const cells = [
-      type.name + '（' + rows.length + ' 轮汇总）', '—',
-      ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : '—',
-      rng(pp, 1),
-      rng(tg, 1),
-      pTok.length ? Math.min(...pTok) + ' ~ ' + Math.max(...pTok) : '—',
-      cTok.length ? Math.min(...cTok) + ' ~ ' + Math.max(...cTok) : '—',
-      '—',
+    const range = (a, d) => a.length ? Math.min(...a).toFixed(d) + ' ~ ' + Math.max(...a).toFixed(d) : null;
+    benchRow([
+      type.name, rows.length + ' 轮汇总',
+      ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : null,
+      f1(pp && pp.min), f1(pp && pp.avg), f1(pp && pp.max),
+      f1(tg && tg.min), f1(tg && tg.avg), f1(tg && tg.max),
+      range(pTok, 0), range(cTok, 0),
+      totals.length ? (Math.min(...totals) / 1000).toFixed(2) + ' ~ ' + (Math.max(...totals) / 1000).toFixed(2) + ' s' : null,
       rows[0].src
-    ];
-    const tr = document.createElement('tr');
-    cells.forEach((c, i) => {
-      const td = document.createElement('td');
-      if(i === 8) td.className = 'src';
-      td.textContent = c;
-      tr.appendChild(td);
-    });
-    benchRowsEl.appendChild(tr);
+    ]);
   }
 
   function benchMedian(a){
