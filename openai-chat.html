@@ -1128,7 +1128,7 @@
     benchRow([
       r.type, r.round,
       r.ttftMs != null ? benchFmtMs(r.ttftMs) : null,
-      f1(r.ppTps),
+      mmaCell(r.ppTps, r.ppTps, r.ppTps),
       ss ? mmaCell(ss.min, ss.max, ss.avg) : (r.tgTps != null ? mmaCell(r.tgTps, r.tgTps, r.tgTps) : null),
       // PP 分位数是跨轮统计：单轮行内只有本轮一个样本，P50 = P99 = 本轮值
       (r.ppTps != null && r.ppSample != null) ? (f1(r.ppSample) + ' / ' + f1(r.ppSample)) : null,
