@@ -14,7 +14,7 @@
 - 🎛 采样参数：`temperature` / `top_p` / `top_k` / `reasoning_effort`（off/low/medium/high/xhigh）
 - 📊 生成结束自动统计：TTFT、生成耗时、字数、吐字速度（字/s）、Tokens、tok/s
 - 🖥 自动滚动跟随最新回复；回复区可最大化为大弹窗
-- 仅依赖 CDN 上的 marked + DOMPurify（加载失败自动降级为纯文本），本地无任何依赖
+- ⚡ **端点测速**（llama-bench 风格）：可输入 PP / TG token 数，多种 prompt 类型检验预测解码收益，输出 **PP tok/s、TG tok/s、TTFT**，支持预热、多轮中位数汇总、CSV 导出
 
 ## 使用
 
@@ -24,8 +24,7 @@
 open index.html              # macOS
 ```
 
-填入端点地址 → 刷新模型 → 输入提示词 → 发送。
-
+填入端点地址 → 刷新模型 → 输入提示词 → 发送。点工具条「⚡ 测速」可对当前端点/模型做 PP / TG / TTFT 压测。
 > **https 页面调用 http 端点会被浏览器拦截（混合内容）**：在线地址是 https，若你的端点是 http（如局域网 `http://ai395:8080/v1`），安全页面不能直接访问 http 接口，会报 `Failed to fetch`。这不是 CORS 问题。解决办法见下方「连接 http 端点」。
 
 ## 连接 http 端点（混合内容）

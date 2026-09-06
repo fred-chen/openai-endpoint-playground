@@ -130,8 +130,31 @@
     transition:opacity .2s,transform .2s;z-index:200;max-width:90vw}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .toast.err{border-color:var(--err);color:#ffb3b3}
+
+  /* ===== 端点测速面板（llama-bench 风格：PP / TG / TTFT） ===== */
+  .bench-panel{position:fixed;inset:3vh 3vw;z-index:120;display:none;flex-direction:column;
+    background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 18px;
+    box-shadow:0 24px 80px rgba(0,0,0,.7)}
+  .bench-panel.open{display:flex}
+  body.bench-open .backdrop{display:block}
+  .bench-head{display:flex;align-items:center;gap:10px;flex:none;margin-bottom:8px}
+  .bench-head h2{margin:0;font-size:15px}
+  .bench-head .sub{color:var(--muted);font-size:11.5px}
+  .bench-params{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none}
+  .bench-types{display:flex;flex-wrap:wrap;gap:6px;flex:none;margin:2px 0 6px}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+  .chip input{accent-color:var(--accent);width:13px;height:13px;margin:0;cursor:pointer}
+  .chip.on{color:var(--text);border-color:var(--accent)}
+  .bench-scroll{flex:1;min-height:120px;overflow:auto;border:1px solid var(--border);border-radius:9px;background:#0b0d12}
+  .btable{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
+  .btable th,.btable td{padding:5px 9px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}
+  .btable th{position:sticky;top:0;background:var(--panel2);color:var(--muted);font-weight:600;z-index:1}
+  .btable td:first-child,.btable th:first-child{text-align:left}
+  .btable .src{color:var(--muted);font-size:11px}
+  .bsum{flex:none;margin-top:8px;font-size:12.5px;color:var(--muted);line-height:1.7}
+  .bsum b{color:var(--text);font-family:var(--mono)}
 </style>
-</head>
 <body>
 <div class="app">
   <header>
@@ -201,6 +224,7 @@
         <div class="pill">tok/s <b id="tps">—</b></div>
       </div>
       <button class="btn ghost sm" id="maxBtn" title="最大化 / 还原（Esc）">⤢ 最大化</button>
+      <button class="btn ghost sm" id="benchBtn" title="端点测速：PP / TG / TTFT，多类 prompt 检验预测解码">⚡ 测速</button>
     </div>
 
     <div class="statusbar" id="statusbar" style="display:none">
@@ -232,6 +256,41 @@
   </div>
 </div>
 
+<!-- 端点测速面板（llama-bench 风格：PP / TG / TTFT） -->
+<div class="bench-panel" id="benchPanel" role="dialog" aria-label="端点测速">
+  <div class="bench-head">
+    <h2>⚡ 端点测速</h2>
+    <span class="sub" id="benchTarget">PP = Prompt 处理速度 · TG = Token 生成速度 · TTFT = 首 token 延迟</span>
+    <span style="flex:1"></span>
+    <button class="btn ghost sm" id="benchClose">✕ 关闭</button>
+  </div>
+  <div class="bench-params">
+    <div class="ifield num"><label for="ppTokens">PP tokens</label><input id="ppTokens" type="number" value="512" min="16" step="16" /></div>
+    <div class="ifield num"><label for="tgTokens">TG tokens</label><input id="tgTokens" type="number" value="128" min="16" step="16" /></div>
+    <div class="ifield num"><label for="benchRounds">每类轮数</label><input id="benchRounds" type="number" value="1" min="1" max="10" step="1" /></div>
+    <label class="chk" title="正式计时前先跑一轮小请求，排除模型加载 / 连接建立的影响"><input type="checkbox" id="benchWarmup" checked /> 先预热</label>
+    <span style="flex:1"></span>
+    <button class="btn" id="benchRun">▶ 开始测速</button>
+    <button class="btn danger" id="benchStop" disabled>⏹ 停止</button>
+    <button class="btn ghost" id="benchCopy" disabled>⧉ 复制 CSV</button>
+  </div>
+  <div class="bench-types" id="benchTypes"></div>
+  <div class="statusbar" id="benchStatus" style="display:none">
+    <span class="spinner" id="benchSpinner"></span>
+    <span class="msg" id="benchStatusMsg"></span>
+    <span class="meta" id="benchStatusMeta"></span>
+  </div>
+  <div class="bench-scroll">
+    <table class="btable">
+      <thead><tr>
+        <th>类型</th><th>轮</th><th>TTFT</th><th>PP tok/s</th><th>TG tok/s</th>
+        <th>prompt tok</th><th>生成 tok</th><th>总耗时</th><th>数据来源</th>
+      </tr></thead>
+      <tbody id="benchRows"></tbody>
+    </table>
+  </div>
+  <div class="bsum" id="benchSummary">尚未运行。不同 prompt 类型可检验预测解码在不同任务上的收益：重复列表收益通常最大，代码生成通常最小。</div>
+</div>
 <div class="backdrop" id="backdrop"></div>
 <div class="toast" id="toast"></div>
 
@@ -649,6 +708,305 @@
     }
   }
 
+  // ---------- 端点测速（llama-bench 风格：PP / TG / TTFT） ----------
+  const benchBtn = $('benchBtn'), benchPanel = $('benchPanel'), benchCloseBtn = $('benchClose');
+  const ppInput = $('ppTokens'), tgInput = $('tgTokens'), roundsInput = $('benchRounds'), warmupChk = $('benchWarmup');
+  const benchRunBtn = $('benchRun'), benchStopBtn = $('benchStop'), benchCopyBtn = $('benchCopy');
+  const benchTypesEl = $('benchTypes'), benchRowsEl = $('benchRows'), benchSummaryEl = $('benchSummary');
+  const benchStatusEl = $('benchStatus'), benchStatusMsg = $('benchStatusMsg'), benchStatusMeta = $('benchStatusMeta');
+  const benchSpinner = $('benchSpinner');
+  const benchTargetEl = $('benchTarget');
+  let benchOpenState = false, benchAbort = null, benchRunning = false;
+  let benchResults = [], benchUseStreamOptions = true;
+  let benchCharsPerTok = 4.3; // 填充文本的 chars/token 比率，每轮用服务端回报的真实 token 数自校准
+  // 5 类 prompt：任务可预测性不同，用以检验预测解码（speculative decoding）在不同场景的收益
+  const BENCH_TYPES = [
+    { id:'prose',    name:'散文续写', tip:'自然语言连续文本，可预测性中高' },
+    { id:'list',     name:'重复列表', tip:'高度重复结构，预测解码收益通常最大' },
+    { id:'code',     name:'代码生成', tip:'代码 token 跳跃大，预测解码收益通常最小' },
+    { id:'translate',name:'翻译',    tip:'目标语言流畅文本，中等可预测' },
+    { id:'longctx',  name:'长上下文', tip:'长输入 + 短输出，主要考验 PP（预填充）' },
+  ];
+
+  // 确定性填充文本（LCG 伪随机选词），用于把 prompt 垫到目标 token 数
+  const BENCH_WORDS = ('time person year way day thing man world life hand part child eye woman place work week case point '
+    + 'government company number group problem fact water room mother area money story month lot right study book job '
+    + 'business issue side kind head house service friend father power hour game line end member law car city community '
+    + 'name president team minute idea kid body information back parent face others level office door health art war '
+    + 'history party result change morning reason research girl moment air teacher force education foot step sense view').split(/\s+/);
+  function benchFiller(targetTokens){
+    let seed = 20240601;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    const out = []; let chars = 0, wc = 0;
+    const targetChars = Math.max(64, targetTokens * benchCharsPerTok);
+    while(chars < targetChars){
+      const w = BENCH_WORDS[Math.floor(rnd() * BENCH_WORDS.length)];
+      out.push(w); chars += w.length + 1; wc++;
+      if(wc % 12 === 0) out[out.length - 1] = '.';   // 每 12 词一个句号
+      if(wc % 96 === 0){ out.push('\n'); chars += 1; }
+    }
+    return out.join(' ');
+  }
+  const benchEstTokens = t => Math.ceil(t.length / benchCharsPerTok);
+
+  // 构造各类 prompt：指令 + 填充上下文，使总 prompt ≈ pp tokens
+  function benchBuildMessages(type, pp, tg){
+    let user;
+    if(type.id === 'prose'){
+      const story = benchFiller(Math.max(16, pp - 40));
+      user = 'Below is the beginning of a story.\n\n' + story
+           + '\n\nContinue the story in fluent English prose for at least ' + Math.max(20, Math.round(tg * 0.7))
+           + ' words. Do not summarize, do not stop early, do not repeat the beginning.';
+    }else if(type.id === 'list'){
+      const ctx = benchFiller(Math.max(16, pp - 40));
+      user = 'Read the context below (you may ignore its content).\n\n' + ctx
+           + '\n\nNow list ' + Math.max(40, tg) + ' common fruits, one per line, exactly in the format "N. Name", starting at 1.';
+    }else if(type.id === 'code'){
+      const ctx = benchFiller(Math.max(16, pp - 40));
+      user = 'Read the context below (it is padding; ignore its content).\n\n' + ctx
+           + '\n\nNow write a well-commented Python script of about ' + Math.max(30, tg)
+           + ' lines implementing an in-memory key-value store with TTL support and a small demo in __main__. Output only code.';
+    }else if(type.id === 'translate'){
+      const passage = benchFiller(Math.max(16, pp - 30));
+      user = 'Translate the following passage into French. Output only the translation, no explanations.\n\n' + passage;
+    }else{ // longctx：长输入短输出，PP 为主
+      const report = benchFiller(Math.max(16, pp - 20));
+      user = report + '\n\nThe text above is a quarterly report. Reply with exactly one word: OK';
+    }
+    return { messages:[{ role:'user', content:user }], est: benchEstTokens(user), chars: user.length };
+  }
+
+  function benchFmtMs(ms){ return ms >= 1000 ? (ms/1000).toFixed(2) + ' s' : Math.round(ms) + ' ms'; }
+  function benchSetStatus(msg, meta){
+    benchStatusMsg.textContent = msg;
+    benchStatusMeta.textContent = meta || '';
+  }
+
+  // 单轮测速：流式请求，TTFT 取首个增量 token；PP/TG 优先采用服务端 usage 回报
+  async function benchOnce(type, round, pp, tg){
+    const { messages, est, chars: promptChars } = benchBuildMessages(type, pp, tg);
+    const body = { model: model.value.trim(), messages, stream: true, max_tokens: tg, temperature: 0.2, top_p: 1 };
+    if(benchUseStreamOptions) body.stream_options = { include_usage: true };
+    const t0 = performance.now();
+    const res = await fetch(normalizeBase(endpoint.value) + '/chat/completions', {
+      method:'POST', headers: headers({'Content-Type':'application/json'}),
+      body: JSON.stringify(body), signal: benchAbort.signal
+    });
+    if(!res.ok){
+      let detail = '';
+      try{ const j = await res.json(); detail = (j.error && (j.error.message || j.error)) || ''; }catch(e){}
+      // 个别服务不认识 stream_options：降级去掉后重试一次
+      if(res.status === 400 && benchUseStreamOptions && /stream_options/i.test(detail)){
+        benchUseStreamOptions = false;
+        return benchOnce(type, round, pp, tg);
+      }
+      throw new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
+    }
+    const ct = res.headers.get('content-type') || '';
+    let tFirst = 0, tEnd = 0, chars = 0, usage = null, finish = '';
+    if(!ct.includes('event-stream')){ // 服务端不支持流式：退化为整体返回
+      const j = await res.json();
+      tFirst = tEnd = performance.now();
+      usage = j.usage || null;
+      const m = j.choices && j.choices[0] && j.choices[0].message;
+      if(m) chars = ((m.content || '') + ((m.reasoning_content ?? m.reasoning) || '')).length;
+      finish = (j.choices && j.choices[0] && j.choices[0].finish_reason) || '';
+    }else{
+      const reader = res.body.getReader();
+      const dec = new TextDecoder('utf-8');
+      let buf = '';
+      for(;;){
+        const { done, value } = await reader.read();
+        if(done) break;
+        buf += dec.decode(value, { stream:true });
+        let s;
+        while((s = splitSSE(buf)).done){
+          buf = s.rest;
+          for(const line of s.frame.split('\n')){
+            if(!line.startsWith('data:')) continue;
+            const p = line.slice(5).trim();
+            if(!p) continue;
+            if(p === '[DONE]'){ if(!tEnd) tEnd = performance.now(); continue; }
+            let j2; try{ j2 = JSON.parse(p); }catch(e){ continue; }
+            if(j2.usage) usage = j2.usage;
+            const ch = j2.choices && j2.choices[0];
+            const d = ch && ch.delta;
+            if(d && (d.content != null || d.reasoning_content != null || d.reasoning != null)){
+              if(!tFirst) tFirst = performance.now();
+              chars += ((d.content || '') + ((d.reasoning_content ?? d.reasoning) || '')).length;
+            }
+            if(ch && ch.finish_reason) finish = ch.finish_reason;
+          }
+        }
+      }
+      if(!tEnd) tEnd = performance.now();
+    }
+    // 用服务端回报的真实 prompt_tokens 校准填充文本的 chars/token 比率，越跑越准
+    if(usage && usage.prompt_tokens > 0){
+      benchCharsPerTok = Math.min(8, Math.max(2, promptChars / usage.prompt_tokens));
+    }
+    const ttftMs = tFirst - t0;
+    const genMs = Math.max(0, tEnd - tFirst);
+    // token 数：优先服务端 usage；否则估算（标记为 ≈）
+    const promptTokens = (usage && usage.prompt_tokens != null) ? usage.prompt_tokens : est;
+    const completionTokens = (usage && usage.completion_tokens != null) ? usage.completion_tokens : Math.max(1, Math.round(chars / 4));
+    const serverPps = (usage && usage.prompt_tokens_per_sec != null) ? usage.prompt_tokens_per_sec
+                    : ((usage && usage.prompt_time > 0) ? usage.prompt_tokens / usage.prompt_time : null);
+    const serverTps = (usage && usage.completion_tokens_per_sec != null) ? usage.completion_tokens_per_sec
+                    : ((usage && usage.completion_time > 0) ? usage.completion_tokens / usage.completion_time : null);
+    const ppTps = serverPps != null ? serverPps : (ttftMs > 0 ? promptTokens / (ttftMs / 1000) : null);
+    const tgTps = serverTps != null ? serverTps : (genMs > 0 && completionTokens > 1 ? (completionTokens - 1) / (genMs / 1000) : null);
+    const src = serverPps != null ? '服务端 usage' : (usage ? 'usage tokens + 客户端计时' : '≈ 客户端估算');
+    return { type: type.name, id: type.id, round, ttftMs, ppTps, tgTps,
+             promptTokens, completionTokens, totalMs: tEnd - t0, finish, src };
+  }
+
+  function benchAddRow(r){
+    const tr = document.createElement('tr');
+    const cells = [
+      r.type, r.round,
+      r.ttftMs != null ? benchFmtMs(r.ttftMs) : '—',
+      r.ppTps != null ? r.ppTps.toFixed(1) : '—',
+      r.tgTps != null ? r.tgTps.toFixed(1) : '—',
+      r.promptTokens != null ? r.promptTokens : '—',
+      r.completionTokens != null ? r.completionTokens : '—',
+      r.totalMs != null ? (r.totalMs / 1000).toFixed(2) + ' s' : '—',
+      r.src
+    ];
+    cells.forEach((c, i) => {
+      const td = document.createElement('td');
+      if(i === 8) td.className = 'src';
+      td.textContent = c;
+      tr.appendChild(td);
+    });
+    benchRowsEl.appendChild(tr);
+  }
+
+  function benchMedian(a){
+    if(!a.length) return null;
+    const s = [...a].sort((x, y) => x - y);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+  function benchRenderSummary(){
+    if(!benchResults.length) return;
+    const pp = benchMedian(benchResults.map(r => r.ppTps).filter(v => v != null));
+    const tg = benchMedian(benchResults.map(r => r.tgTps).filter(v => v != null));
+    const tt = benchMedian(benchResults.map(r => r.ttftMs).filter(v => v != null));
+    const byType = BENCH_TYPES.map(t => {
+      const rs = benchResults.filter(r => r.id === t.id && r.tgTps != null);
+      return rs.length ? t.name + ' <b>' + benchMedian(rs.map(r => r.tgTps)).toFixed(1) + '</b>' : null;
+    }).filter(Boolean);
+    benchSummaryEl.innerHTML = '共 <b>' + benchResults.length + '</b> 轮 · TTFT 中位 <b>' + (tt != null ? benchFmtMs(tt) : '—')
+    benchSummaryEl.innerHTML = '共 <b>' + benchResults.length + '</b> 轮 · TTFT 中位 <b>' + (tt != null ? benchFmtMs(tt) : '—') + '</b>'
+      + ' · PP 中位 <b>' + (pp != null ? pp.toFixed(1) : '—') + ' tok/s</b>'
+      + ' · TG 中位 <b>' + (tg != null ? tg.toFixed(1) : '—') + ' tok/s</b>'
+      + (byType.length ? '<br>分类型 TG 中位（tok/s）：' + byType.join(' · ') : '');
+  }
+
+  async function runBench(){
+    if(benchRunning) return;
+    const base = normalizeBase(endpoint.value);
+    const md = model.value.trim();
+    if(!base){ toast('请先填写端点地址', true); return; }
+    if(!md){ toast('请先选择或输入模型', true); return; }
+    const pp = Math.max(16, Math.round(parseInt(ppInput.value, 10) || 512));
+    const tg = Math.max(16, Math.round(parseInt(tgInput.value, 10) || 128));
+    const rounds = Math.min(10, Math.max(1, Math.round(parseInt(roundsInput.value, 10) || 1)));
+    ppInput.value = pp; tgInput.value = tg; roundsInput.value = rounds;
+    const types = BENCH_TYPES.filter(t => $('bt_' + t.id).checked);
+    if(!types.length){ toast('请至少勾选一种 prompt 类型', true); return; }
+    benchRunning = true; benchAbort = new AbortController();
+    benchRunBtn.disabled = true; benchStopBtn.disabled = false; benchCopyBtn.disabled = true;
+    benchRowsEl.innerHTML = ''; benchResults = []; benchRenderSummary();
+    benchStatusEl.style.display = 'flex'; benchStatusEl.className = 'statusbar'; benchSpinner.style.display = '';
+    const total = types.length * rounds;
+    try{
+      if(warmupChk.checked){
+        benchSetStatus('预热中（不计入结果）…', '');
+        await benchOnce(BENCH_TYPES[0], 0, 64, 16);
+      }
+      let done = 0;
+      for(const t of types){
+        for(let r = 1; r <= rounds; r++){
+          benchSetStatus('测速中 ' + (done + 1) + '/' + total + '：' + t.name + ' 第 ' + r + ' 轮', 'PP≈' + pp + ' tok · TG≈' + tg + ' tok');
+          const row = await benchOnce(t, r, pp, tg);
+          benchResults.push(row); benchAddRow(row); benchRenderSummary();
+          done++;
+        }
+      }
+      benchStatusEl.className = 'statusbar ok';
+      benchSetStatus('完成 ✓ 共 ' + benchResults.length + ' 轮', '');
+      benchCopyBtn.disabled = false;
+    }catch(e){
+      if(benchAbort && benchAbort.signal.aborted){
+        benchStatusEl.className = 'statusbar ok';
+        benchSetStatus('已停止（已完成 ' + benchResults.length + ' 轮）', '');
+      }else{
+        benchStatusEl.className = 'statusbar error';
+        benchSetStatus('测速失败：' + friendlyFetchError(e, base).split('\n')[0], '');
+        toast('测速失败：' + e.message, true);
+      }
+    }finally{
+      benchRunning = false; benchRunBtn.disabled = false; benchStopBtn.disabled = true;
+      benchSpinner.style.display = 'none';
+    }
+  }
+
+  function copyBenchCsv(){
+    if(!benchResults.length) return;
+    const head = 'type,round,ttft_ms,pp_tok_s,tg_tok_s,prompt_tokens,completion_tokens,total_ms,source';
+    const lines = benchResults.map(r => [
+      r.type, r.round, Math.round(r.ttftMs || 0),
+      r.ppTps != null ? r.ppTps.toFixed(2) : '',
+      r.tgTps != null ? r.tgTps.toFixed(2) : '',
+      r.promptTokens != null ? r.promptTokens : '',
+      r.completionTokens != null ? r.completionTokens : '',
+      ((r.totalMs || 0) / 1000).toFixed(2), r.src
+    ].join(','));
+    const csv = [head, ...lines].join('\n');
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = csv; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); toast('已复制 CSV（' + benchResults.length + ' 行）'); }
+      catch(e){ toast('复制失败', true); }
+      ta.remove();
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(csv).then(() => toast('已复制 CSV（' + benchResults.length + ' 行）')).catch(fallback);
+    }else fallback();
+  }
+
+  function openBench(){
+    benchOpenState = true;
+    benchPanel.classList.add('open');
+    document.body.classList.add('bench-open');
+    benchTargetEl.textContent = '模型：' + (model.value.trim() || '未设置')
+      + ' · 温度固定 0.2 · PP/TG 优先采用服务端 usage 统计';
+  }
+  function closeBench(){
+    benchOpenState = false;
+    benchPanel.classList.remove('open');
+    document.body.classList.remove('bench-open');
+  }
+
+  // 类型勾选 chips
+  BENCH_TYPES.forEach(t => {
+    const lab = document.createElement('label');
+    lab.className = 'chip on'; lab.title = t.tip;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.id = 'bt_' + t.id;
+    cb.addEventListener('change', () => lab.classList.toggle('on', cb.checked));
+    lab.appendChild(cb);
+    const sp = document.createElement('span'); sp.textContent = t.name; lab.appendChild(sp);
+    benchTypesEl.appendChild(lab);
+  });
+  benchBtn.addEventListener('click', openBench);
+  benchCloseBtn.addEventListener('click', closeBench);
+  benchRunBtn.addEventListener('click', runBench);
+  benchStopBtn.addEventListener('click', () => { if(benchAbort) benchAbort.abort(); });
+  benchCopyBtn.addEventListener('click', copyBenchCsv);
+
   // ---------- 事件 ----------
   loadBtn.addEventListener('click', loadModels);
   endpoint.addEventListener('keydown', e => { if(e.key==='Enter') loadModels(); });
@@ -685,9 +1043,12 @@
   $('contentHead').addEventListener('click', () => $('contentSection').classList.toggle('collapsed'));
   toBottom.addEventListener('click', jumpToBottom);
   maxBtn.addEventListener('click', () => setMaximized(!maximized));
-  backdrop.addEventListener('click', () => setMaximized(false));
+  backdrop.addEventListener('click', () => { if(benchOpenState) closeBench(); else setMaximized(false); });
   document.addEventListener('keydown', e => {
-    if(e.key === 'Escape' && maximized && !modelPop.classList.contains('open')) setMaximized(false);
+    if(e.key === 'Escape' && !modelPop.classList.contains('open')){
+      if(benchOpenState) closeBench();
+      else if(maximized) setMaximized(false);
+    }
   });
 })();
 </script>
