@@ -269,7 +269,7 @@
     <button class="btn ghost sm" id="benchClose">✕ 关闭</button>
   </div>
   <div class="bench-params">
-    <div class="ifield num"><label for="ppTokens">PP tokens</label><input id="ppTokens" type="number" value="512" min="16" step="16" /></div>
+    <div class="ifield num"><label for="ppTokens">PP tokens</label><input id="ppTokens" type="number" value="4096" min="16" step="16" /></div>
     <div class="ifield num"><label for="tgTokens">TG tokens</label><input id="tgTokens" type="number" value="128" min="16" step="16" /></div>
     <div class="ifield num"><label for="benchRounds">每类轮数</label><input id="benchRounds" type="number" value="1" min="1" max="10" step="1" /></div>
     <label class="chk" title="预热前对每类 prompt 各跑一次短生成，检查输出连贯性（乱码 / 退化重复 / 过短）；探测失败会中止测速"><input type="checkbox" id="benchCoherence" checked /> coherence 预检</label>
