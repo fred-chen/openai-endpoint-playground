@@ -157,6 +157,9 @@
   .btable .src{color:var(--muted);font-size:11px}
   .bsum{flex:none;margin-top:8px;font-size:12.5px;color:var(--muted);line-height:1.7}
   .bsum b{color:var(--text);font-family:var(--mono)}
+  .bench-params .tok-state{font-size:11px;white-space:nowrap;color:var(--muted)}
+  .bench-params .tok-state.ok{color:var(--ok)}
+  .bench-params .tok-state.err{color:#e8a33d}
   .bsum .stat-range{color:var(--muted);font-size:11.5px;font-family:var(--mono)}
 </style>
 <body>
@@ -269,6 +272,11 @@
     <button class="btn ghost sm" id="benchClose">✕ 关闭</button>
   </div>
   <div class="bench-params">
+    <div class="ifield" style="flex:1.6 1 220px">
+      <label for="benchTokenizer" title="输入 HuggingFace 模型 ID（如 Qwen/Qwen3.8-27B）精确计算 token 数；留空则用测速时的校准方案">Tokenizer</label>
+      <input id="benchTokenizer" type="text" placeholder="可选，如 Qwen/Qwen3.8-27B" autocomplete="off" />
+      <span class="tok-state" id="benchTokState"></span>
+    </div>
     <div class="ifield" style="flex:1.6 1 220px">
       <label for="benchModel">模型</label>
       <div class="combo" id="benchModelCombo">
@@ -790,6 +798,38 @@
   }
   let benchRunSalt = 0; // 每次测速随机盐：页面刷新后种子也不会重放，杜绝跨会话的 cache 命中
   let benchCalibKey = ''; // chars/token 校准缓存键：端点|模型
+
+  // ---------- HuggingFace tokenizer 精确分词（可选）：加载成功用精确 token 数，失败回退校准 ----------
+  const benchTokenizerInput = $('benchTokenizer'), benchTokState = $('benchTokState');
+  let benchTokenizer = null;      // transformers.js AutoTokenizer 实例
+  const TOKENIZER_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6/+esm';
+  function benchTokStateSet(txt, ok){
+    benchTokState.textContent = txt;
+    benchTokState.className = 'tok-state' + (ok === true ? ' ok' : (ok === false ? ' err' : ''));
+  }
+  let benchTokLoadPromise = null;
+  // 加载 HF 分词器；失败返回 null 并保持回退路径
+  async function benchLoadTokenizer(){
+    const id = benchTokenizerInput.value.trim();
+    if(!id){ benchTokenizer = null; benchTokStateSet('', null); return null; }
+    if(!benchTokState.textContent.trim()) benchTokStateSet('加载中…', null);
+    try{
+      if(!window.__transformers){ window.__transformers = await import(TOKENIZER_CDN); }
+      const { AutoTokenizer } = window.__transformers;
+      benchTokenizer = await AutoTokenizer.from_pretrained(id);
+      benchTokStateSet('✓ 已加载', true);
+      return benchTokenizer;
+    }catch(e){
+      benchTokenizer = null;
+      benchTokStateSet('✗ 加载失败，用校准', false);
+      return null;
+    }
+  }
+  // 精确 token 数（用 tokenizer 时）；无 tokenizer 返回 null
+  function benchExactTokens(text){
+    if(!benchTokenizer) return null;
+    try{ return benchTokenizer.encode(text).length; }catch(e){ return null; }
+  }
   // 用一份已知字符数的填充文本量出该 tokenizer 的真实 chars/token 比率，
   // 之后据此构造 prompt，使实际 prompt token 数精确命中用户输入的 PP。
   async function benchCalibrateRatio(base){
@@ -861,36 +901,82 @@
     return Math.max(1, Math.round(cjk + words * 1.33 + punct * 0.8 + newlines));
   }
 
-  // 构造各类 prompt：指令 + 填充上下文，使总 prompt ≈ pp tokens
+  // 构造各类 prompt：指令 + 填充上下文，使总 prompt ≈（或精确等于）pp tokens。
+  // 若已加载 HuggingFace tokenizer，用精确二分让用户消息恰好 token 化为 pp；
+  // 否则用校准比率估算。
+  const BENCH_PROMPT = {
+    prose: (f, tg) => 'Below is the beginning of a story.\n\n' + f
+      + '\n\nContinue the story in fluent English prose for at least ' + Math.max(20, Math.round(tg * 0.7))
+      + ' words. Do not summarize, do not stop early, do not repeat the beginning.',
+    list: (f, tg) => 'Read the context below (you may ignore its content).\n\n' + f
+      + '\n\nNow list ' + Math.max(40, tg) + ' common fruits, one per line, exactly in the format "N. Name", starting at 1.',
+    code: (f, tg) => 'Read the context below (it is padding; ignore its content).\n\n' + f
+      + '\n\nNow write a well-commented Python script of about ' + Math.max(30, tg)
+      + ' lines implementing an in-memory key-value store with TTL support and a small demo in __main__. Output only code.',
+    translate: (f) => 'Translate the following passage into French. Output only the translation, no explanations.\n\n' + f,
+    longctx: (f) => f + '\n\nThe text above is a quarterly report. Reply with exactly one word: OK',
+  };
+  // 生成一个确定性的词数组（benchFiller 的底层），供精确二分切词用
+  function benchFillerWords(targetChars, seed){
+    let state = (20240601 + ((seed || 0) || 0) * 2654435761) & 0x7fffffff;
+    const rnd = () => { state = (state * 1103515245 + 12345) & 0x7fffffff; return state / 0x7fffffff; };
+    const out = []; let chars = 0, wc = 0;
+    while(chars < targetChars){
+      const w = BENCH_WORDS[Math.floor(rnd() * BENCH_WORDS.length)];
+      out.push(w); chars += w.length + 1; wc++;
+      if(wc % 12 === 0) out[out.length - 1] = '.';
+      if(wc % 96 === 0){ out.push('\n'); chars += 1; }
+    }
+    return out;
+  }
+  // 精确填充：二分切词直至 整个用户消息 的 token 数 == pp；tokenizer 不可用则回退到校准分支
+  function benchBuildExact(type, pp, tg, seed){
+    const instr = BENCH_PROMPT[type.id] || BENCH_PROMPT.prose;
+    const nonce = '[variant ' + ((seed || 0) >>> 0).toString(16) + ']\n\n';
+    const full = benchFillerWords((pp + 40) * 6, seed); // 足够长：目标*6 字符
+    const measure = (k) => {
+      const user = nonce + instr(full.slice(0, k).join(' '), tg);
+      const n = benchExactTokens(user);
+      return { user, n };
+    };
+    let lo = 0, hi = full.length, best = '', bestN = -1;
+    for(let it = 0; it < 12 && lo <= hi; it++){
+      const mid = (lo + hi) >> 1;
+      const { user, n } = measure(mid);
+      if(n == null) return null;           // tokenizer 中途失败
+      if(n === pp){ best = user; bestN = n; break; }
+      if(n < pp){ best = user; bestN = n; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    if(bestN >= 0) return { user: best, tokens: bestN };
+    // 兜底：干脆填到接近即可
+    return null;
+  }
   function benchBuildMessages(type, pp, tg, seed){
     let user;
+    if(benchTokenizer){
+      const exact = benchBuildExact(type, pp, tg, seed);
+      if(exact){ return { messages:[{ role:'user', content: exact.user }], est: exact.tokens, chars: exact.user.length }; }
+    }
     if(type.id === 'prose'){
       const story = benchFiller(Math.max(16, pp - 40), seed);
-      user = 'Below is the beginning of a story.\n\n' + story
-           + '\n\nContinue the story in fluent English prose for at least ' + Math.max(20, Math.round(tg * 0.7))
-           + ' words. Do not summarize, do not stop early, do not repeat the beginning.';
+      user = BENCH_PROMPT.prose(story, tg);
     }else if(type.id === 'list'){
       const ctx = benchFiller(Math.max(16, pp - 40), seed);
-      user = 'Read the context below (you may ignore its content).\n\n' + ctx
-           + '\n\nNow list ' + Math.max(40, tg) + ' common fruits, one per line, exactly in the format "N. Name", starting at 1.';
+      user = BENCH_PROMPT.list(ctx, tg);
     }else if(type.id === 'code'){
       const ctx = benchFiller(Math.max(16, pp - 40), seed);
-      user = 'Read the context below (it is padding; ignore its content).\n\n' + ctx
-           + '\n\nNow write a well-commented Python script of about ' + Math.max(30, tg)
-           + ' lines implementing an in-memory key-value store with TTL support and a small demo in __main__. Output only code.';
+      user = BENCH_PROMPT.code(ctx, tg);
     }else if(type.id === 'translate'){
       const passage = benchFiller(Math.max(16, pp - 30), seed);
-      user = 'Translate the following passage into French. Output only the translation, no explanations.\n\n' + passage;
-    }else{ // longctx：长输入短输出，PP 为主
+      user = BENCH_PROMPT.translate(passage, tg);
+    }else{
       const report = benchFiller(Math.max(16, pp - 20), seed);
-      user = report + '\n\nThe text above is a quarterly report. Reply with exactly one word: OK';
+      user = BENCH_PROMPT.longctx(report, tg);
     }
-    // 唯一 nonce 前缀：让每一轮 prompt 从第 1 个 token 就不同，
-    // 彻底击穿服务端 prompt/prefix cache——否则缓存命中的轮次 TTFT 骤降，PP 被虚高数倍。
     user = '[variant ' + ((seed || 0) >>> 0).toString(16) + ']\n\n' + user;
     return { messages:[{ role:'user', content:user }], est: benchEstTokens(user), chars: user.length };
   }
-
   function benchFmtMs(ms){ return ms >= 1000 ? (ms/1000).toFixed(2) + ' s' : Math.round(ms) + ' ms'; }
   function benchSetStatus(msg, meta){
     benchStatusMsg.textContent = msg;
@@ -1326,10 +1412,15 @@
     benchStatusEl.style.display = 'flex'; benchStatusEl.className = 'statusbar'; benchSpinner.style.display = '';
     const total = types.length * rounds;
     try{
+      // HuggingFace tokenizer（可选）：用户填了 ID 则加载用于精确分词；失败自动走校准
+      if(!benchTokenizer && benchTokenizerInput.value.trim()){
+        benchSetStatus('加载分词器…', benchTokenizerInput.value.trim());
+        await benchLoadTokenizer();
+      }
       // char/token 比率校准：每个 端点|模型 组合先量出真实分词比率，
-      // 让后面构造的 prompt 精确命中用户输入的 PP token 数。
+      // 让后面构造的 prompt 精确命中用户输入的 PP token 数（tokenizer 加载成功时不需校准）。
       const ck = base + '|' + benchCurrentModel();
-      if(benchCalibKey !== ck){
+      if(benchCalibKey !== ck && !benchTokenizer){
         benchCalibKey = ck;
         benchSetStatus('校准分词比率…', '测量该模型的 chars/token，确保 PP 精确');
         await benchCalibrateRatio(base);
@@ -1463,6 +1554,10 @@
   benchModelInput.addEventListener('focus', benchOpenCombo);
   benchModelInput.addEventListener('click', benchOpenCombo);
   benchModelInput.addEventListener('input', () => { benchComboTyped = true; benchRenderCombo(); });
+  // tokenizer 输入框：回车/失焦时尝试加载；空则清空并回退校准
+  const loadTok = () => { benchTokenizer = null; benchLoadTokenizer(); };
+  benchTokenizerInput.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); loadTok(); } });
+  benchTokenizerInput.addEventListener('blur', () => { if(benchTokenizerInput.value.trim()) loadTok(); });
   benchModelInput.addEventListener('blur', () => setTimeout(benchModelCloseCombo, 120));
   benchModelInput.addEventListener('keydown', e => {
     if(e.key === 'ArrowDown'){ e.preventDefault(); benchModelMove(1); }
