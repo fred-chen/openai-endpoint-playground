@@ -941,8 +941,9 @@
     const serverCt = (serverTps != null && countSane) ? outTokens / serverTps : null;
     const tgOk = serverCt != null && serverCt <= (winMs / 1000) * 1.1 + 0.05
                  && serverCt >= (winMs / 1000) * 0.3 - 0.05;
-    // 解码窗口过短或 token 太少时速率无意义（如只回 “OK” 一两个 token），置空避免除小数爆炸
-    const tgTps = nonStream ? null : (tgOk ? serverTps : ((winMs >= 100 && outTokens >= 4) ? outTokens / (winMs / 1000) : null));
+    // 解码窗口/token 过少时速率无意义（如只回一个 token），置空避免除小数爆炸；
+    // 阈值放宽到 40ms / 2 token：短回复（如长上下文只回 “OK”）也有可测的解码速率
+    const tgTps = nonStream ? null : (tgOk ? serverTps : ((winMs >= 40 && outTokens >= 2) ? outTokens / (winMs / 1000) : null));
     const completionTokens = outTokens;
     let src;
     if(nonStream) src = '非流式端点（仅统计 token/耗时）';
@@ -1108,8 +1109,8 @@
     benchRow([
       type.name, rows.length + ' 轮汇总',
       ttfts.length ? benchFmtMs(Math.min(...ttfts)) + ' ~ ' + benchFmtMs(Math.max(...ttfts)) : null,
-      f1(pp && pp.min) + ' / ' + f1(pp && pp.avg) + ' / ' + f1(pp && pp.max),
-      f1(tg && tg.min) + ' / ' + f1(tg && tg.avg) + ' / ' + f1(tg && tg.max),
+      mmaCell(pp && pp.min, pp && pp.max, pp && pp.avg),
+      mmaCell(tg && tg.min, tg && tg.max, tg && tg.avg),
       range(pTok, 0), range(cTok, 0),
       totals.length ? (Math.min(...totals) / 1000).toFixed(2) + ' ~ ' + (Math.max(...totals) / 1000).toFixed(2) + ' s' : null,
       rows[0].src
