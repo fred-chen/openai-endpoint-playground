@@ -15,6 +15,7 @@
 - 📊 生成结束自动统计：TTFT、生成耗时、字数、吐字速度（字/s）、Tokens、tok/s
 - 🖥 自动滚动跟随最新回复；回复区可最大化为大弹窗
 - ⚡ **端点测速**（llama-bench 风格）：可输入 PP / TG token 数，多种 prompt 类型检验预测解码收益，输出 **PP tok/s、TG tok/s、TTFT**，支持预热、多轮中位数汇总、CSV 导出
+  - **通用适配**：不依赖特定推理框架——自动探测并禁用思考（reasoning_budget / chat_template_kwargs / thinking / disable_thinking / /no_think 等常见开关逐个尝试）；服务端 usage 需通过物理自洽校验才采信，否则回退客户端实测口径（增量块数、finish=length 截断规则、按文字系统估算 token）；`max_tokens` 报错自动切换 `max_completion_tokens`；非流式端点诚实标注不测 PP/TG
 
 ## 使用
 
