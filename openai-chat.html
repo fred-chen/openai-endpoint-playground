@@ -93,6 +93,15 @@
     text-align:center;padding:1px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .attach{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);white-space:nowrap}
   .attach .hint{font-size:11px;overflow:hidden;text-overflow:ellipsis}
+
+  /* 全屏输入层（编辑器式）：Esc 或按钮退出 */
+  .bigedit{position:fixed;inset:0;z-index:120;display:flex;flex-direction:column;gap:8px;padding:14px;background:#0b0d12}
+  .bigedit[hidden]{display:none}
+  .bigedit .be-bar{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--muted);flex:none}
+  .bigedit .be-name{font-weight:700;color:var(--text);font-size:14px}
+  .bigedit textarea{flex:1;min-height:0;width:100%;resize:none;font-family:var(--mono);font-size:13.5px;line-height:1.6;
+    background:#0e1118;color:#d5dbe8;border:1px solid var(--border);border-radius:10px;padding:14px;tab-size:2}
+  .bigedit .imgs{flex:none;max-height:22vh;overflow:auto}
   .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 6px}
   .toolbar .spacer{flex:1}
   .stat{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -251,6 +260,8 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
           <button class="btn ghost sm" id="imgBtn" title="添加图片（也可粘贴 / 拖入图片文件）">📷 图片</button>
           <span class="hint">支持粘贴 / 拖拽 / 点击选择，可多张</span>
           <span class="spacer" style="flex:1"></span>
+          <button class="btn ghost sm" id="sysMaxBtn" title="全屏编辑系统提示词">⤢ 最大化</button>
+          <button class="btn ghost sm" id="promptMaxBtn" title="全屏编辑用户提示词">⤢ 最大化</button>
         </div>
         <input type="file" id="imgInput" accept="image/*" multiple hidden />
       </div>
@@ -358,6 +369,16 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
   </div>
   <div class="bsum" id="benchSummary">尚未运行。不同 prompt 类型可检验预测解码在不同任务上的收益：重复列表收益通常最大，代码生成通常最小。</div>
 </div>
+<div class="bigedit" id="bigEdit" hidden>
+  <div class="be-bar">
+    <span class="be-name" id="beName"></span>
+    <span id="beInfo"></span>
+    <span style="flex:1"></span>
+    <button class="btn ghost sm" id="beClose" title="退出全屏（Esc）">✕ 退出全屏</button>
+  </div>
+  <div class="imgs" id="beImgs"></div>
+  <textarea id="beTa" spellcheck="false"></textarea>
+</div>
 <div class="backdrop" id="backdrop"></div>
 <div class="toast" id="toast"></div>
 
@@ -371,6 +392,8 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
   const temperature = $('temperature'), topP = $('topP'), topK = $('topK'), reasoningEffort = $('reasoningEffort');
   const multiTurn = $('multiTurn');
   const imgsEl = $('imgs'), imgBtn = $('imgBtn'), imgInput = $('imgInput');
+  const bigEdit = $('bigEdit'), beTa = $('beTa'), beName = $('beName'), beInfo = $('beInfo'), beClose = $('beClose'), beImgs = $('beImgs');
+  const sysMaxBtn = $('sysMaxBtn'), promptMaxBtn = $('promptMaxBtn');
   const loadBtn = $('loadBtn'), sendBtn = $('sendBtn'), stopBtn = $('stopBtn'), clearBtn = $('clearBtn');
   const statusbar = $('statusbar'), spinner = $('spinner'), statusMsg = $('statusMsg'), statusMeta = $('statusMeta');
   const output = $('output'), reasonBody = $('reasonBody'), contentBody = $('contentBody');
@@ -457,6 +480,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
   }
   function renderImgs(){
     imgsEl.innerHTML = '';
+    if(beImgs) beImgs.innerHTML = '';
     pendingImages.forEach((img, i) => {
       const t = document.createElement('div'); t.className = 'thumb';
       const im = document.createElement('img'); im.src = img.url; im.alt = img.name || '';
@@ -467,8 +491,32 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       meta.textContent = fmtBytes(img.bytes);
       t.appendChild(im); t.appendChild(rm); t.appendChild(meta);
       imgsEl.appendChild(t);
+      if(beImgs && !bigEdit.hidden) beImgs.appendChild(t.cloneNode(true));
     });
+    if(beImgs && !bigEdit.hidden){
+      beImgs.querySelectorAll('.rm').forEach((b, i) => {
+        b.addEventListener('click', () => { pendingImages.splice(i, 1); renderImgs(); });
+      });
+    }
   }
+  // 全屏输入层：系统 / 用户提示词都可展开为整屏编辑器（长提示词不再挤在小框里）
+  let beTarget = null; // 'system' | 'prompt'
+  function openBigEdit(target){
+    beTarget = target;
+    beName.textContent = target === 'system' ? '系统提示词 System Prompt' : '用户提示词 User Prompt';
+    beTa.value = target === 'system' ? systemEl.value : promptEl.value;
+    bigEdit.hidden = false;
+    renderImgs();
+    beTa.focus();
+  }
+  function closeBigEdit(){
+    if(beTarget === 'system') systemEl.value = beTa.value;
+    else if(beTarget === 'prompt') promptEl.value = beTa.value;
+    bigEdit.hidden = true;
+    beTarget = null;
+    renderImgs();
+  }
+  function updateBeInfo(){ beInfo.textContent = beTa.value.length > 0 ? beTa.value.length + ' 字符' : ''; }
   async function addImageFiles(files){
     let ok = 0, oversize = 0;
     for(const f of files){
@@ -690,6 +738,12 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
              + '2) 给端点配 HTTPS（或放在同源 https 反向代理后面）。';
       }
       return '无法连接端点（' + base + '）。请检查：地址是否正确、服务是否在线、该地址在你当前网络是否可达、以及是否已允许跨域(CORS)。';
+    }
+    // 413：请求体过大。最常见是反向代理（nginx 等）的 client_max_body_size 限制，
+    // 而不是模型上下文不够——给出明确指引而不是只抛 HTTP 413。
+    if(/413/.test(msg)){
+      return msg + ' —— 请求体超过端点前面反向代理的上传大小限制（如 nginx 的 client_max_body_size，默认仅 1MB）。'
+           + '长 prompt 的 JSON 请求体很容易超过它：请调大该限制（例如 client_max_body_size 128m），或把上下文长度调小后重试。';
     }
     return msg;
   }
@@ -1919,30 +1973,43 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
   const convEl = $('conv'), convToggle = $('convToggle');
   convToggle.addEventListener('click', () => { convEl.classList.toggle('open'); });
 
+  // 全屏输入层事件
+  sysMaxBtn.addEventListener('click', () => openBigEdit('system'));
+  promptMaxBtn.addEventListener('click', () => openBigEdit('prompt'));
+  beClose.addEventListener('click', closeBigEdit);
+  beTa.addEventListener('input', updateBeInfo);
+  beTa.addEventListener('keydown', e => { if(e.key === 'Escape'){ e.stopPropagation(); closeBigEdit(); } });
+
   // ---------- 图片：粘贴 / 拖拽 / 选择 ----------
   imgBtn.addEventListener('click', () => imgInput.click());
   imgInput.addEventListener('change', () => {
     if(imgInput.files && imgInput.files.length) addImageFiles([...imgInput.files]);
     imgInput.value = ''; // 允许再次选择同一文件
   });
-  // 在提示词框内直接粘贴截图/图片（Ctrl/⌘+V）
-  promptEl.addEventListener('paste', async e => {
+  // 在提示词框（含全屏编辑器）内直接粘贴截图/图片（Ctrl/⌘+V）
+  async function handleImgPaste(e){
     const dt = e.clipboardData;
     if(!dt) return;
     const files = await imagesFromClipboardDT(dt);
     if(files.length){ e.preventDefault(); addImageFiles(files); }
-  });
+  }
+  promptEl.addEventListener('paste', handleImgPaste);
+  beTa.addEventListener('paste', handleImgPaste);
   // 拖拽图片文件到提示词框（松手即添加，高亮反馈）
-  promptEl.addEventListener('dragover', e => {
-    if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); imgsEl.classList.add('dragover'); }
-  });
-  promptEl.addEventListener('dragleave', () => imgsEl.classList.remove('dragover'));
-  promptEl.addEventListener('drop', e => {
+  function imgDragover(e){ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); imgsEl.classList.add('dragover'); } }
+  function imgDragleave(){ imgsEl.classList.remove('dragover'); }
+  function imgDrop(e){
     if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){
       e.preventDefault(); imgsEl.classList.remove('dragover');
       addImageFiles(imagesFromDataTransfer(e.dataTransfer));
     }
-  });
+  }
+  promptEl.addEventListener('dragover', imgDragover);
+  promptEl.addEventListener('dragleave', imgDragleave);
+  promptEl.addEventListener('drop', imgDrop);
+  beTa.addEventListener('dragover', imgDragover);
+  beTa.addEventListener('dragleave', imgDragleave);
+  beTa.addEventListener('drop', imgDrop);
   // combobox：聚焦/点击展示全部；只有键盘输入才过滤
   model.addEventListener('focus', openCombo);
   model.addEventListener('click', openCombo);
