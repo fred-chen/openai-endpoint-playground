@@ -185,8 +185,9 @@
   .bsum .stat-range{color:var(--muted);font-size:11.5px;font-family:var(--mono)}
   /* 会话轮次面板 */
   .chat{position:relative}
-  .conv-toggle{position:absolute;top:8px;right:52px;z-index:5;font-size:11.5px;padding:3px 9px}
-  .conv{position:absolute;top:34px;right:52px;z-index:6;display:none;flex-direction:column;gap:10px;width:min(560px,86vw);max-height:64vh;overflow:auto;
+  .attach{position:relative}
+  .conv-toggle{font-size:11.5px;padding:3px 9px}
+  .conv{position:absolute;bottom:calc(100% + 8px);right:0;z-index:20;display:none;flex-direction:column;gap:10px;width:min(560px,86vw);max-height:64vh;overflow:auto;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;box-shadow:0 14px 44px rgba(0,0,0,.6)}
   .conv.open{display:flex}
   .conv .cmsg{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;font-size:12.5px}
@@ -249,8 +250,6 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
 
   <!-- 对话卡：提示词 + 工具条 + 输出 -->
   <div class="card chat" id="chatCard">
-    <button class="btn ghost sm conv-toggle" id="convToggle" title="查看多轮对话历史（含图片）">💬 会话 <b id="convCount" style="font-family:var(--mono)">0</b></button>
-    <div class="conv" id="conv"></div>
     <div class="prompts">
       <textarea id="system" placeholder="系统提示词 System Prompt（可选）"></textarea>
       <div class="promptwrap">
@@ -260,6 +259,8 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
           <button class="btn ghost sm" id="imgBtn" title="添加图片（也可粘贴 / 拖入图片文件）">📷 图片</button>
           <span class="hint">支持粘贴 / 拖拽 / 点击选择，可多张</span>
           <span class="spacer" style="flex:1"></span>
+          <button class="btn ghost sm conv-toggle" id="convToggle" title="查看多轮对话历史（含图片）">💬 会话 <b id="convCount" style="font-family:var(--mono)">0</b></button>
+          <div class="conv" id="conv"></div>
           <button class="btn ghost sm" id="sysMaxBtn" title="全屏编辑系统提示词">⤢ 最大化</button>
           <button class="btn ghost sm" id="promptMaxBtn" title="全屏编辑用户提示词">⤢ 最大化</button>
         </div>
@@ -272,7 +273,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       <button class="btn danger" id="stopBtn" disabled>⏹ 停止</button>
       <button class="btn ghost" id="clearBtn" title="清空对话上下文与输出">清空</button>
       <label class="chk" title="勾选：保留上下文进行多轮对话；取消勾选：每次发送都清空上下文，从新对话开始">
-        <input type="checkbox" id="multiTurn" checked /> 多轮对话
+        <input type="checkbox" id="multiTurn" /> 多轮对话
       </label>
       <span class="spacer"></span>
       <div class="stat" id="statBar">
@@ -897,15 +898,19 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
 
     const sysText = systemEl.value;
 
+    // 多轮对话未勾选：每次发送都是全新会话——先丢弃累积上下文再构建请求
+    if(!multiTurn.checked) conversation = [];
+
     // 本次发送携带的图片：快照后清空输入区，避免下一条消息重复携带
     const userImages = pendingImages.slice();
     pendingImages.length = 0;
     renderImgs();
 
     const userContent = buildUserContent(userText, userImages);
+    // 勾选多轮：把历史上下文一起发送；未勾选：全新会话，只发 system + 本条
     const messages = [];
     if(sysText.trim()) messages.push({ role:'system', content: sysText });
-    for(const m of conversation) messages.push(m);
+    if(multiTurn.checked){ for(const m of conversation) messages.push(m); }
     messages.push({ role:'user', content: userContent });
 
     const body = readSamplingParams({ model: model.value.trim(), messages, stream: true });
@@ -935,6 +940,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       flushContentUI(); // 确保最后的回复完整渲染
       autoScroll();
       if(content){
+        if(!multiTurn.checked) conversation = []; // 兜底：全新会话模式下绝不留历史
         conversation.push(userMsg);
         conversation.push({ role:'assistant', content });
         renderConvImgs();
@@ -958,6 +964,15 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     tokens.textContent = tok + ' tok';
     tps.textContent = genSpan > 0 ? (tok / genSpan).toFixed(1) + ' tok/s' : '—';
   }
+  // 取消多轮勾选 = 立即丢弃已累积上下文，杜绝“新会话仍带旧记忆”的错觉
+  multiTurn.addEventListener('change', () => {
+    if(!multiTurn.checked){
+      conversation = [];
+      convImgs.clear();
+      renderConvImgs();
+      toast('已切换为全新会话（上下文已清空）');
+    }
+  });
 
   function stop(){ if(abortCtrl) abortCtrl.abort(); }
   function clearAll(){
