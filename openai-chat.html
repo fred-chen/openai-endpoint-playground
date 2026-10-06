@@ -1416,7 +1416,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       throw new Error('HTTP ' + res.status + (detail ? '：' + detail : ''));
     }
     const ct = res.headers.get('content-type') || '';
-    let tFirst = 0, tEnd = 0, chars = 0, usage = null, finish = '';
+    let tFirst = 0, tEnd = 0, chars = 0, usage = null, timings = null, finish = '';
     let outText = '', nDeltas = 0, hadReasoning = false, tLastDelta = 0;
     const deltaTimes = []; // 每个 token 增量的到达时刻，用于轮内秒级 TG 统计
     let nonStream = false;
@@ -1425,6 +1425,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       const j = await res.json();
       tFirst = tEnd = performance.now();
       usage = j.usage || null;
+      timings = j.timings || null;
       const m = j.choices && j.choices[0] && j.choices[0].message;
       if(m){
         outText = ((m.content || '') + ((m.reasoning_content ?? m.reasoning) || ''));
@@ -1452,15 +1453,22 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
             if(p === '[DONE]'){ if(!tEnd) tEnd = performance.now(); continue; }
             let j2; try{ j2 = JSON.parse(p); }catch(e){ continue; }
             if(j2.usage) usage = j2.usage;
+            if(j2.timings) timings = j2.timings;
             const ch = j2.choices && j2.choices[0];
             const d = ch && ch.delta;
-            if(d && (d.content != null || d.reasoning_content != null || d.reasoning != null)){
+            // 只把“非空 content/reasoning”的增量算作 token 帧：
+            // 有些端点（如 radiance）先发一帧 content='' 的“回合开始”帧，
+            // 若按 != null 计数会把 TTFT 误判成几十毫秒，导致 PP 速率虚高到几万 t/s。
+            const dtReas = (d ? (d.reasoning_content ?? d.reasoning) : null);
+            const dtCont = (d ? d.content : undefined);
+            const dtReal = (typeof dtCont === 'string' && dtCont !== '') || (typeof dtReas === 'string' && dtReas !== '');
+            if(d && dtReal){
               if(!tFirst) tFirst = performance.now();
               tLastDelta = performance.now();
               nDeltas++;
               deltaTimes.push(tLastDelta);
-              if(d.reasoning_content || d.reasoning) hadReasoning = true;
-              outText += (d.content || '') + ((d.reasoning_content ?? d.reasoning) || '');
+              if(dtReas) hadReasoning = true;
+              outText += (dtCont || '') + (dtReas || '');
               chars = outText.length;
             }
             if(ch && ch.finish_reason) finish = ch.finish_reason;
@@ -1490,14 +1498,28 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     // 若输出远小于预算，可能是上下文溢出等异常截断，此时仍走估算。
     const capped = finish === 'length' && estOut >= tg * 0.3;
     const outTokens = countSane ? usage.completion_tokens : (capped ? tg : estOut);
+    // 服务端速率来源（优先级从高到低）：
+    //   usage.prompt_tokens_per_sec      —— OpenAI 标准自报速率
+    //   usage.prompt_time > 0            —— OpenAI 标准预填时长
+    //   timings.prompt_ms                —— llama.cpp 风格预填墙钟时长
+    // 注意：不能用 timings.prompt_per_second 直接取值——radiance 等 build 的
+    // prompt_n 字段会截断（4096 目标时只报 1799），其派生速率随之失真；
+    // 一律用【客户端可见的 usage.prompt_tokens / timings.prompt_ms】重算才可靠。
     const serverPps = (usage && usage.prompt_tokens_per_sec != null) ? usage.prompt_tokens_per_sec
-                    : ((usage && usage.prompt_time > 0) ? usage.prompt_tokens / usage.prompt_time : null);
+                    : ((usage && usage.prompt_time > 0) ? usage.prompt_tokens / usage.prompt_time
+                    : ((timings && timings.prompt_ms > 0) ? (usage ? usage.prompt_tokens : 0) / (timings.prompt_ms / 1000) : null));
+    // 解码速率同理：优先标准字段，退化到 timings.predicted_ms 重算。
     const serverTps = (usage && usage.completion_tokens_per_sec != null) ? usage.completion_tokens_per_sec
-                    : ((usage && usage.completion_time > 0) ? usage.completion_tokens / usage.completion_time : null);
+                    : ((usage && usage.completion_time > 0) ? usage.completion_tokens / usage.completion_time
+                    : ((timings && timings.predicted_ms > 0 && outTokens > 0) ? outTokens / (timings.predicted_ms / 1000) : null));
     // 服务端速率只有物理自洽才采用：其隐含时长必须落在客户端实测窗口的合理倍带内。
     // 预填不可能晚于首 token 到达，解码不可能长过整条流——否则就是服务端相位归因错乱。
     const serverPt = (serverPps != null) ? promptTokens / serverPps : null;
-    const ppOk = serverPt != null && serverPt <= (ttftMs / 1000) * 1.1 + 0.05
+    // 服务端速率只有物理自洽才采用：其隐含时长必须落在客户端实测窗口的合理倍带内。
+    // 预填不可能晚于首 token 到达，解码不可能长过整条流——否则就是服务端相位归因错乱。
+    // （上限留 1.35 倍给流式预填 / 网络抖动，下限 0.15 倍挡住明显的相位错乱）
+    const ppOk = serverPt != null && ttftMs > 0
+                 && serverPt <= (ttftMs / 1000) * 1.35 + 0.05
                  && serverPt >= (ttftMs / 1000) * 0.15 - 0.05;
     const ppTps = nonStream ? null : (ppOk ? serverPps : (ttftMs >= 20 ? promptTokens / (ttftMs / 1000) : null));
     const serverCt = (serverTps != null && countSane) ? outTokens / serverTps : null;
