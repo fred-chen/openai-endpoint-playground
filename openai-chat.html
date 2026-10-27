@@ -723,9 +723,22 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
     chatCard.scrollIntoView({ behavior:'smooth', block:'nearest' });
   }
 
+  // 区分"真不可达"与"可达但响应被 CORS 拦截"：
+  // no-cors 请求不受 CORS 策略否决（返回 opaque 响应），因此同一地址
+  // no-cors 探测成功、而普通 fetch 失败，就是网络通、只是服务端响应
+  // 缺少 Access-Control-Allow-Origin 头。8 秒超时避免探测卡住错误提示。
+  async function probeReachable(url){
+    try{
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 8000);
+      await fetch(url, { method:'GET', mode:'no-cors', cache:'no-store', signal: ac.signal });
+      clearTimeout(t);
+      return true;
+    }catch(e){ return false; }
+  }
   // 当 https 页面请求 http 端点时，浏览器会因『混合内容』直接拦截 fetch，
   // 表现为原始的 TypeError: Failed to fetch。这里把它翻译成可操作的中文提示。
-  function friendlyFetchError(err, base){
+  async function friendlyFetchError(err, base){
     const msg = (err && err.message) || String(err);
     const isNetFail = /failed to fetch|networkerror|load failed|network request failed/i.test(msg);
     if(isNetFail){
@@ -737,6 +750,15 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
              + '解决办法（任选其一）：\n'
              + '1) 直接用本地 openai-chat.html（file:// 或 http://localhost）访问该内网端点；\n'
              + '2) 给端点配 HTTPS（或放在同源 https 反向代理后面）。';
+      }
+      // http 页面（含 file://）下先探测可达性：端点其实可达时，
+      // 这次 Failed to fetch 几乎必然是服务端缺少 CORS 响应头。
+      if(await probeReachable(base + '/models')){
+        return '端点可达（no-cors 探测成功），但响应缺少跨域(CORS)许可头 Access-Control-Allow-Origin，浏览器拦截了读取。\n'
+             + '解决办法（任选其一）：\n'
+             + '1) 服务端开启 CORS，放行本页面来源；例如 Strata 运行配置里加 "cors_origins": ["*"] 后重启实例；\n'
+             + '2) 让页面与端点同源（同主机、端口、协议）访问，例如把 openai-chat.html 放到端点所在主机，经反向代理提供；\n'
+             + '3) 若同一台机器上 curl 成功而浏览器失败，正是此类 CORS 情况——网络本身是通的。';
       }
       return '无法连接端点（' + base + '）。请检查：地址是否正确、服务是否在线、该地址在你当前网络是否可达、以及是否已允许跨域(CORS)。';
     }
@@ -773,7 +795,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
       setStatus('已加载 ' + uniq.length + ' 个模型（也可手动输入其他名称）', 'ok');
       toast('模型列表已更新，共 ' + uniq.length + ' 个');
     }catch(e){
-      const msg = friendlyFetchError(e, base);
+      const msg = await friendlyFetchError(e, base);
       setStatus('获取模型失败：' + msg, 'error');
       toast('获取模型失败：' + msg.split('\n')[0], true);
     }finally{
@@ -927,7 +949,7 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
         setStatus('已停止', 'ok');
         toast('已停止本次生成');
       }else{
-        const msg = friendlyFetchError(e, base);
+        const msg = await friendlyFetchError(e, base);
         // 端点因图片拒绝时，追加针对性中文提示
         const hint = (userImages.length && e && e.imageRejected) ? imageErrorHint(e.status, e.detail) : '';
         setStatus('请求出错：' + msg + (hint ? ' ' + hint : ''), 'error');
@@ -1866,7 +1888,8 @@ window.BENCH_EMBEDDED_TOKENIZERS = {"zai-org/GLM-5.3-Flash":"H4sICM1LnWoAA3phaS1
         benchSetStatus('已停止（已完成 ' + benchResults.length + ' 轮）', '');
       }else{
         benchStatusEl.className = 'statusbar error';
-        benchSetStatus('测速失败：' + friendlyFetchError(e, base).split('\n')[0], '');
+        const benchMsg = await friendlyFetchError(e, base);
+        benchSetStatus('测速失败：' + benchMsg.split('\n')[0], '');
         toast('测速失败：' + e.message, true);
       }
     }finally{
